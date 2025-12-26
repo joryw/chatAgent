@@ -60,4 +60,4 @@ htmlcov/
 .ftp
 
 .history
-.history/
+.history/*
