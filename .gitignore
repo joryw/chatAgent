@@ -61,3 +61,6 @@ htmlcov/
 
 .history
 .history/*
+
+.cursor/
+.cursor/*
