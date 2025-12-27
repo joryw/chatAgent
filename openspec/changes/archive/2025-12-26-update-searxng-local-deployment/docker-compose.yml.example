@@ -1,0 +1,61 @@
+# SearXNG Docker Compose 配置示例
+# 基于官方仓库: https://github.com/searxng/searxng
+# 官方文档: https://docs.searxng.org/
+
+services:
+  searxng:
+    container_name: searxng
+    image: searxng/searxng:latest
+    
+    # 端口映射 - 将容器的 8080 端口映射到主机
+    ports:
+      - "8080:8080"
+    
+    # 挂载配置文件
+    volumes:
+      - ./searxng:/etc/searxng:rw
+    
+    # 环境变量配置
+    environment:
+      # 实例 URL (可选)
+      - SEARXNG_BASE_URL=http://localhost:8080/
+      # 设置 secret key (重要: 请修改为随机字符串)
+      - SEARXNG_SECRET=change-this-to-a-random-string
+    
+    # 容器重启策略
+    restart: unless-stopped
+    
+    # 限制资源使用 (可选)
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+    
+    # 日志配置 (可选)
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# 可选: 添加 Redis 缓存以提升性能
+#  redis:
+#    container_name: searxng-redis
+#    image: redis:alpine
+#    command: redis-server --save 30 1 --loglevel warning
+#    restart: unless-stopped
+#    volumes:
+#      - redis-data:/data
+
+# volumes:
+#   redis-data:
+
+# 使用说明:
+# 1. 复制此文件为 docker-compose.yml
+# 2. 创建配置目录: mkdir -p searxng
+# 3. 复制 settings.yml.example 到 searxng/settings.yml
+# 4. 修改 SEARXNG_SECRET 为随机字符串
+# 5. 启动服务: docker-compose up -d
+# 6. 访问: http://localhost:8080
+

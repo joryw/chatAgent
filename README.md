@@ -69,9 +69,9 @@ DEFAULT_PROVIDER=openai
 # Logging
 LOG_LEVEL=INFO
 
-# Web Search Configuration (optional)
+# Web Search Configuration (optional, requires local SearXNG deployment)
 SEARCH_ENABLED=false
-SEARXNG_URL=https://searx.be
+SEARXNG_URL=http://localhost:8080  # Local SearXNG instance (recommended)
 SEARCH_TIMEOUT=5.0
 SEARCH_MAX_RESULTS=5
 SEARCH_MAX_CONTENT_LENGTH=200
@@ -81,9 +81,12 @@ SEARCH_SAFESEARCH=1
 
 **Note about Web Search:**
 - Web search is optional and disabled by default
-- You can use public SearXNG instances (like https://searx.be) or deploy your own
-- Enable it in the chat interface using the "🔍 联网搜索" toggle
-- Search results are automatically injected into the model's context
+- **🔥 New: Local SearXNG deployment** - For stable and reliable search functionality
+- **🚀 一键部署脚本**: `./deploy-searxng.sh` - 自动完成所有配置！
+- **🎯 一键启动**: `./start-all.sh` - 同时启动 SearXNG 和 AI Agent
+- **Deployment Guide:** See `docs/guides/deployment/docker.md` for all deployment options
+- Enable search in chat using the "🔍 联网搜索" toggle or `/search on` command
+- Search results are automatically injected into the model's context with source citations
 
 ### Running the Application
 
@@ -103,16 +106,60 @@ Open your browser to `http://localhost:8000` to start chatting!
 
 Simply type your message in the chat interface and press Enter. The agent will respond using the configured model.
 
-### Web Search
+### Web Search (SearXNG Integration)
 
-Enable web search to get real-time information from the internet:
+**🚀 Prerequisites:** Deploy SearXNG locally for stable search functionality.
+
+See **[SearXNG Deployment Guide](docs/guides/searxng-deployment.md)** for detailed instructions.
+
+#### Quick Deployment (3种方式任选)
+
+**🔥 方式1: 一键脚本 (最简单，推荐)**
+```bash
+# 一条命令完成所有配置!
+./deploy-searxng.sh
+
+# 启动全部服务
+./start-all.sh
+```
+
+**方式2: 手动 Docker Compose**
+```bash
+# 1. Deploy SearXNG using Docker
+mkdir -p ~/searxng-local
+cd ~/searxng-local
+curl -O https://raw.githubusercontent.com/searxng/searxng/master/utils/docker-compose.yaml
+docker compose up -d
+
+# 2. Configure settings.yml (ensure JSON API is enabled)
+# See docs/guides/searxng-deployment.md for details
+
+# 3. Verify deployment
+bash openspec/changes/update-searxng-local-deployment/verify-searxng.sh
+
+# 4. Update .env in chatAgent
+echo "SEARXNG_URL=http://localhost:8080" >> .env
+echo "SEARCH_ENABLED=true" >> .env
+```
+
+**方式3: 完整容器化**
+```bash
+# 使用 docker-compose 同时部署 SearXNG 和 AI Agent
+docker-compose -f docker-compose.full.yml up -d
+```
+
+📖 **详细部署指南**: [docs/guides/deployment/docker.md](docs/guides/deployment/docker.md)
+
+#### Using Web Search
+
+Once SearXNG is deployed and configured:
 
 1. Type `/search on` in the chat to enable search
 2. Type `/search off` to disable search
 3. Ask questions that require current information
 
 When search is enabled:
-- The system automatically searches for relevant information
+- The system automatically searches for relevant information using your local SearXNG
 - Search results are displayed with sources
 - The model uses search results to provide up-to-date answers
 - Sources are cited with [number] references
@@ -121,6 +168,11 @@ When search is enabled:
 - `/search on` - Enable web search
 - `/search off` - Disable web search
 - `/search` - Check current search status
+
+**Troubleshooting:**
+- If search isn't working, check `docs/guides/troubleshooting/searxng.md`
+- Verify SearXNG is running: `docker ps -f name=searxng`
+- Check JSON API: `curl "http://localhost:8080/search?q=test&format=json"`
 
 ### Slash Commands
 
@@ -295,6 +347,11 @@ class NewProviderWrapper(BaseModelWrapper):
 
 ## Recent Updates
 
+- 🔥 **Local SearXNG Deployment** - Stable web search via local Docker deployment
+  - Complete deployment guide with docker-compose.yml and settings.yml templates
+  - Enhanced health checks and configuration validation
+  - Automatic troubleshooting and error diagnostics
+  - See `docs/guides/searxng-deployment.md`
 - ✅ **Web Search Integration** - SearXNG-powered search with source display
 - ✅ **Streaming Responses** - Real-time response generation
 - ✅ **Multi-Provider Support** - OpenAI, Anthropic, DeepSeek
@@ -324,6 +381,9 @@ Contributions are welcome! Please follow the existing code style and add tests f
 ### Quick Links
 
 - 🚀 [Quick Start Guide](docs/guides/quick-start/) - Get started in 5 minutes
+- 🐳 [Docker Deployment Guide](docs/guides/deployment/docker.md) - **NEW:** 3种部署方式 (含一键脚本)
+- 🔍 [SearXNG Deployment Guide](docs/guides/searxng-deployment.md) - Local search setup
+- 🔧 [SearXNG Troubleshooting](docs/guides/troubleshooting/searxng.md) - Fix search issues
 - ⚙️ [Configuration Guide](docs/guides/configuration/) - Detailed configuration options
 - 🏗️ [Architecture Overview](docs/architecture/overview/) - System design and architecture
 - 👨‍💻 [Contributing Guide](docs/development/contributing/) - How to contribute

@@ -15,16 +15,23 @@ class SearchConfig(BaseModel):
     
     Attributes:
         enabled: Whether search is enabled by default
-        searxng_url: SearXNG instance URL
+        searxng_url: SearXNG instance URL (default: local deployment)
         timeout: Search request timeout in seconds
         max_results: Maximum number of search results
         max_content_length: Maximum length for result content
         language: Preferred search language
         safesearch: Safe search level (0=off, 1=moderate, 2=strict)
+    
+    Note:
+        For stable search functionality, deploy SearXNG locally using Docker.
+        See docs/guides/searxng-deployment.md for deployment instructions.
     """
     
     enabled: bool = Field(default=False)
-    searxng_url: str = Field(default="https://searx.be")
+    searxng_url: str = Field(
+        default="http://localhost:8080",
+        description="SearXNG instance URL. Default uses local deployment."
+    )
     timeout: float = Field(default=5.0, gt=0.0, le=30.0)
     max_results: int = Field(default=5, gt=0, le=20)
     max_content_length: int = Field(default=200, gt=0, le=1000)
@@ -62,10 +69,14 @@ def get_search_config() -> SearchConfig:
     
     Returns:
         SearchConfig instance with settings loaded from environment.
+    
+    Note:
+        Default SEARXNG_URL is http://localhost:8080 (local deployment).
+        For deployment instructions, see docs/guides/searxng-deployment.md
     """
     return SearchConfig(
         enabled=os.getenv("SEARCH_ENABLED", "false").lower() == "true",
-        searxng_url=os.getenv("SEARXNG_URL", "https://searx.be"),
+        searxng_url=os.getenv("SEARXNG_URL", "http://localhost:8080"),
         timeout=float(os.getenv("SEARCH_TIMEOUT", "5.0")),
         max_results=int(os.getenv("SEARCH_MAX_RESULTS", "5")),
         max_content_length=int(os.getenv("SEARCH_MAX_CONTENT_LENGTH", "200")),
@@ -81,8 +92,12 @@ def is_search_available() -> bool:
     
     Returns:
         True if search is available
+    
+    Note:
+        This only validates the URL format, not actual service availability.
+        Actual connectivity is checked during service initialization.
     """
-    searxng_url = os.getenv("SEARXNG_URL", "https://searx.be")
+    searxng_url = os.getenv("SEARXNG_URL", "http://localhost:8080")
     # Basic validation - just check it's not empty and looks like a URL
     return bool(searxng_url and searxng_url.startswith("http"))
 
