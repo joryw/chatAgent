@@ -27,7 +27,7 @@ class SearchConfig(BaseModel):
         See docs/guides/searxng-deployment.md for deployment instructions.
     """
     
-    enabled: bool = Field(default=False)
+    enabled: bool = Field(default=True)
     searxng_url: str = Field(
         default="http://localhost:8080",
         description="SearXNG instance URL. Default uses local deployment."
@@ -75,7 +75,7 @@ def get_search_config() -> SearchConfig:
         For deployment instructions, see docs/guides/searxng-deployment.md
     """
     return SearchConfig(
-        enabled=os.getenv("SEARCH_ENABLED", "false").lower() == "true",
+        enabled=os.getenv("SEARCH_ENABLED", "true").lower() == "true",
         searxng_url=os.getenv("SEARXNG_URL", "http://localhost:8080"),
         timeout=float(os.getenv("SEARCH_TIMEOUT", "5.0")),
         max_results=int(os.getenv("SEARCH_MAX_RESULTS", "5")),

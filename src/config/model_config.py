@@ -31,6 +31,7 @@ class ModelConfig(BaseModel):
         max_tokens: Maximum tokens to generate
         top_p: Nucleus sampling parameter
         timeout: Request timeout in seconds
+        model_variant: Model variant for DeepSeek (deepseek-chat or deepseek-reasoner)
     """
     
     provider: ModelProvider
@@ -41,6 +42,7 @@ class ModelConfig(BaseModel):
     max_tokens: int = Field(default=2000, gt=0)
     top_p: float = Field(default=1.0, ge=0.0, le=1.0)
     timeout: int = Field(default=30, gt=0)
+    model_variant: Optional[str] = None  # For DeepSeek: deepseek-chat or deepseek-reasoner
     
     @validator("api_key")
     def validate_api_key(cls, v: str) -> str:
@@ -108,13 +110,34 @@ def get_model_config(provider: Optional[str] = None) -> ModelConfig:
         )
     
     elif provider == ModelProvider.DEEPSEEK:
+        # Get model variant (deepseek-chat or deepseek-reasoner)
+        model_variant = os.getenv("DEEPSEEK_MODEL_VARIANT", "deepseek-reasoner")
+        
+        # DeepSeek API max_tokens valid range depends on model variant:
+        # - deepseek-chat: [1, 8192] (8K max)
+        # - deepseek-reasoner: [1, 65536] (64K max)
+        max_tokens = int(os.getenv("DEEPSEEK_MAX_TOKENS", "2000"))
+        
+        if model_variant == "deepseek-reasoner":
+            # deepseek-reasoner supports up to 64K output
+            max_limit = 65536
+        else:
+            # deepseek-chat supports up to 8K output
+            max_limit = 8192
+        
+        if max_tokens > max_limit:
+            max_tokens = max_limit
+        elif max_tokens < 1:
+            max_tokens = 1
+        
         return ModelConfig(
             provider=ModelProvider.DEEPSEEK,
-            model_name=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+            model_name=os.getenv("DEEPSEEK_MODEL", model_variant),
             api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
             temperature=float(os.getenv("DEEPSEEK_TEMPERATURE", "0.7")),
-            max_tokens=int(os.getenv("DEEPSEEK_MAX_TOKENS", "2000")),
+            max_tokens=max_tokens,
+            model_variant=model_variant,
         )
     
     else:

@@ -205,4 +205,23 @@ class OpenAIWrapper(BaseModelWrapper):
             Number of tokens
         """
         return len(self.tokenizer.encode(text))
+    
+    def get_langchain_llm(self):
+        """Get LangChain compatible LLM instance with LangSmith tracing support.
+        
+        Returns:
+            LangChain ChatOpenAI instance with callbacks configured
+        """
+        callbacks = self._get_callbacks()
+        if callbacks:
+            # Create a new instance with callbacks if LangSmith is enabled
+            return ChatOpenAI(
+                model=self.config.model_name,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                openai_api_key=self.config.api_key,
+                request_timeout=self.config.timeout,
+                callbacks=callbacks,
+            )
+        return self.model
 

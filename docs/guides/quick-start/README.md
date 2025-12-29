@@ -60,6 +60,8 @@ OPENAI_MODEL=gpt-4
 DEEPSEEK_API_KEY=sk-your-deepseek-key
 DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
 DEEPSEEK_MODEL=deepseek-chat
+DEEPSEEK_MODEL_VARIANT=deepseek-chat  # or deepseek-reasoner for reasoning model
+DEEPSEEK_MAX_TOKENS=2000  # Max output: 8K (chat) / 64K (reasoner). Context: 128K
 
 # Anthropic Claude
 ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
@@ -114,6 +116,30 @@ You: /switch deepseek
 System: ✅ Switched to deepseek
 You: Tell me a joke
 AI: [DeepSeek response]
+```
+
+### Using DeepSeek Reasoner Model
+
+**Via UI Settings Panel:**
+1. Click ⚙️ icon in top-right corner
+2. Select "deepseek-reasoner" from "🤖 DeepSeek 模型" dropdown
+3. Ask a complex question
+
+**Example with Reasoning Display:**
+```
+You: Solve this logic puzzle: If all roses are flowers, and some flowers fade quickly, can we conclude that some roses fade quickly?
+
+AI: 
+💭 思考中... (streaming)
+[Thinking process displays here in real-time]
+- Analyzing the logical structure...
+- Identifying the premises...
+- Checking for valid inference...
+
+💡 思考过程 (collapsed after answer starts)
+
+[Final Answer]
+No, we cannot conclude that some roses fade quickly from the given premises...
 ```
 
 ## Troubleshooting

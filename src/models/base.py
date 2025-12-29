@@ -2,9 +2,10 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, List
 
 from ..config.model_config import ModelConfig
+from ..config.langsmith_config import get_langsmith_tracer
 
 
 @dataclass
@@ -35,10 +36,12 @@ class StreamChunk:
     Attributes:
         content: Text content in this chunk
         finish_reason: Reason for completion if stream ended
+        chunk_type: Type of content ('reasoning' or 'answer')
     """
     
     content: str
     finish_reason: Optional[str] = None
+    chunk_type: str = "answer"  # Default to 'answer' for backward compatibility
 
 
 class BaseModelWrapper(ABC):
@@ -111,6 +114,26 @@ class BaseModelWrapper(ABC):
             Number of tokens
         """
         pass
+    
+    @abstractmethod
+    def get_langchain_llm(self):
+        """Get LangChain compatible LLM instance.
+        
+        Returns:
+            LangChain BaseChatModel instance
+        """
+        pass
+    
+    def _get_callbacks(self) -> List:
+        """Get callbacks for LangChain model, including LangSmith tracer if enabled.
+        
+        Returns:
+            List of callback handlers (may be empty if LangSmith is disabled)
+        """
+        tracer = get_langsmith_tracer()
+        if tracer:
+            return [tracer]
+        return []
     
     def validate_context_length(
         self,

@@ -4,6 +4,7 @@ import logging
 from typing import AsyncIterator, Optional
 
 from anthropic import Anthropic
+from langchain_anthropic import ChatAnthropic
 from tenacity import (
     retry,
     stop_after_attempt,
@@ -30,6 +31,15 @@ class AnthropicWrapper(BaseModelWrapper):
         
         # Initialize Anthropic client
         self.client = Anthropic(api_key=config.api_key)
+        
+        # Initialize LangChain model
+        self.model = ChatAnthropic(
+            model=config.model_name,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens,
+            anthropic_api_key=config.api_key,
+            timeout=config.timeout,
+        )
     
     @retry(
         stop=stop_after_attempt(3),
@@ -171,4 +181,24 @@ class AnthropicWrapper(BaseModelWrapper):
         # Anthropic uses roughly 4 chars per token as approximation
         # For more accurate counting, we'd need to use their API
         return len(text) // 4
+    
+    def get_langchain_llm(self):
+        """Get LangChain compatible LLM instance with LangSmith tracing support.
+        
+        Returns:
+            LangChain ChatAnthropic instance with callbacks configured
+        """
+        callbacks = self._get_callbacks()
+        if callbacks:
+            # Create a new instance with callbacks if LangSmith is enabled
+            from langchain_anthropic import ChatAnthropic
+            return ChatAnthropic(
+                model=self.config.model_name,
+                temperature=self.config.temperature,
+                max_tokens=self.config.max_tokens,
+                anthropic_api_key=self.config.api_key,
+                timeout=self.config.timeout,
+                callbacks=callbacks,
+            )
+        return self.model
 

@@ -5,13 +5,21 @@ A conversational AI agent with support for multiple LLM providers (OpenAI, Anthr
 ## Features
 
 - 🤖 **Multi-Provider Support**: Seamlessly switch between OpenAI, Anthropic, and DeepSeek models
+- 🔀 **Dual Conversation Modes**: 
+  - **Chat Mode** (💬): Traditional conversation with manual search control
+  - **Agent Mode** (🤖): Autonomous AI with ReAct loop for intelligent tool usage
+- 💭 **DeepSeek Reasoner**: Advanced reasoning model with transparent thinking process display
 - 💬 **Interactive Chat Interface**: Beautiful Chainlit UI for testing and conversation
 - 🔍 **Web Search Integration**: Optional SearXNG-powered web search for real-time information
+- 🧠 **ReAct Pattern**: Reasoning + Acting loop for complex problem solving
+- 🛠️ **Tool Integration**: LangChain-based tool system (search, and extensible for more)
 - 🔧 **Configurable Parameters**: Adjust temperature, max_tokens, and other model parameters
 - 📝 **Prompt Management**: Template-based prompt system with variable substitution
 - 🔄 **Automatic Retry Logic**: Robust error handling with exponential backoff
 - 📊 **Token Counting**: Real-time token usage tracking and context validation
 - 🎯 **Type-Safe Configuration**: Pydantic-based configuration with validation
+- 👁️ **Process Visualization**: Real-time display of agent thinking, tool calls, and results
+- 📈 **LangSmith Monitoring**: Optional integration with LangSmith for call tracing, debugging, and performance analysis
 
 ## Quick Start
 
@@ -57,6 +65,12 @@ DEEPSEEK_MODEL=deepseek-chat
 DEEPSEEK_TEMPERATURE=0.7
 DEEPSEEK_MAX_TOKENS=2000
 
+# DeepSeek Model Variant (deepseek-chat or deepseek-reasoner)
+# - deepseek-chat: Standard conversational model
+# - deepseek-reasoner: Reasoning model with thinking process display
+# Note: Can be switched via UI settings panel (recommended)
+DEEPSEEK_MODEL_VARIANT=deepseek-chat
+
 # Anthropic Configuration (optional)
 ANTHROPIC_API_KEY=sk-ant-your-anthropic-api-key-here
 ANTHROPIC_MODEL=claude-3-sonnet-20240229
@@ -65,6 +79,11 @@ ANTHROPIC_MAX_TOKENS=2000
 
 # Default Provider
 DEFAULT_PROVIDER=openai
+
+# Default Conversation Mode (chat or agent)
+# - chat: Regular conversation with manual search control
+# - agent: Autonomous decision-making with ReAct loop
+DEFAULT_MODE=chat
 
 # Logging
 LOG_LEVEL=INFO
@@ -77,6 +96,15 @@ SEARCH_MAX_RESULTS=5
 SEARCH_MAX_CONTENT_LENGTH=200
 SEARCH_LANGUAGE=auto
 SEARCH_SAFESEARCH=1
+
+# LangSmith Monitoring (optional)
+# LangSmith is a monitoring and debugging platform for LangChain applications
+# Get your API key from: https://smith.langchain.com/
+# If not configured, monitoring is disabled and the application works normally
+LANGSMITH_API_KEY=
+LANGSMITH_PROJECT=chatagent-dev
+# Optional: Custom LangSmith API endpoint (for self-hosted instances)
+# LANGSMITH_API_URL=https://api.smith.langchain.com
 ```
 
 **Note about Web Search:**
@@ -105,6 +133,128 @@ Open your browser to `http://localhost:8000` to start chatting!
 ### Basic Chat
 
 Simply type your message in the chat interface and press Enter. The agent will respond using the configured model.
+
+### DeepSeek Reasoner Model
+
+DeepSeek offers two model variants:
+
+1. **deepseek-chat** (💬 对话模型): Standard conversational model for general chat
+2. **deepseek-reasoner** (💭 推理模型): Advanced reasoning model that shows its thinking process
+
+#### Using DeepSeek Reasoner
+
+**Via UI Settings Panel (Recommended):**
+1. Click the ⚙️ icon in the top-right corner
+2. Select "🤖 DeepSeek 模型" dropdown
+3. Choose "deepseek-reasoner"
+4. The model will now display its thinking process before answering
+
+**Via Environment Variable:**
+```bash
+# In .env file
+DEEPSEEK_MODEL_VARIANT=deepseek-reasoner
+```
+
+**Features:**
+- 💭 **Transparent Thinking**: See the model's reasoning steps in real-time
+- 🔄 **Streaming Display**: Thinking content streams as it's generated
+- 📦 **Auto-Collapse**: Thinking content automatically collapses when the answer begins
+- 🔍 **Expandable**: Click "💡 思考过程" to view the full reasoning process
+
+**Technical Specifications:**
+
+| Specification | deepseek-chat | deepseek-reasoner |
+|--------------|---------------|-------------------|
+| **Context Length** (Input) | 128K | 128K |
+| **Output Length** (max_tokens) | Default 4K, Max **8K** | Default 32K, Max **64K** |
+| **Reasoning Display** | ❌ | ✅ |
+
+> **Note**: Context length (128K) refers to how much text the model can **read and understand** (your questions, chat history, etc.), while output length refers to how much text the model can **generate** in response.
+
+**Example Use Cases:**
+- Complex problem-solving requiring step-by-step reasoning
+- Mathematical calculations with detailed explanations
+- Logical deduction and analysis
+- Multi-step planning and decision-making
+
+### Conversation Modes
+
+The system supports two distinct conversation modes:
+
+#### 1. Chat Mode (💬) - Default
+
+Traditional conversational AI with manual search control.
+
+**Features:**
+- Manual control over web search (via UI toggle or `/search` command)
+- Faster responses
+- Lower token consumption
+- Best for simple conversations and known topics
+
+**Usage:**
+- Enable/disable search via UI settings panel (⚙️)
+- Or use command: `/search on` or `/search off`
+
+#### 2. Agent Mode (🤖) - Advanced
+
+Autonomous AI that makes intelligent decisions about tool usage.
+
+**Features:**
+- 🧠 **Autonomous Decision-Making**: Model decides when to search
+- 🔄 **ReAct Loop**: Reasoning → Acting → Observing → Repeat
+- 🛠️ **Tool Integration**: Automatic use of search and other tools
+- 👁️ **Process Visualization**: See the agent's思考、行动 and 观察过程
+- 🎯 **Multi-Step Reasoning**: Supports iterative searches and refinement
+
+**Switching to Agent Mode:**
+
+*Via UI Settings Panel (Recommended):*
+1. Click the ⚙️ icon
+2. Select **agent** in "🔀 对话模式"
+3. Start asking questions
+
+*Via Command:*
+```bash
+/mode agent
+```
+
+**Agent Configuration:**
+```bash
+# In .env file
+DEFAULT_MODE=agent
+AGENT_MAX_ITERATIONS=5
+AGENT_MAX_EXECUTION_TIME=60
+AGENT_VERBOSE=true
+```
+
+**How It Works:**
+
+When you ask a question in Agent mode:
+1. **💭 思考**: Agent analyzes the question and plans its approach
+2. **🛠️ 行动**: If needed, calls search tool to gather information
+3. **💡 观察**: Processes the search results
+4. **🔁 迭代**: Repeats if more information is needed
+5. **✅ 回答**: Provides final answer with citations
+
+**Best Use Cases:**
+- Questions requiring real-time information
+- Complex queries needing multiple sources
+- When unsure if search is needed (let Agent decide)
+- Research and fact-checking tasks
+
+**Example:**
+```
+User: "Compare the latest AI models from OpenAI, Anthropic, and DeepSeek"
+
+Agent Process:
+├─ 💭 Thinking: Need current information about latest models
+├─ 🛠️ Search: "latest AI models 2024 OpenAI Anthropic DeepSeek"
+├─ 💡 Observation: Found 5 results with model comparisons
+├─ 💭 Thinking: Information sufficient, can now answer
+└─ ✅ Answer: Detailed comparison with citations [1][2][3]
+```
+
+For more details, see the [Agent Mode Guide](docs/guides/agent-mode.md).
 
 ### Web Search (SearXNG Integration)
 
@@ -178,10 +328,14 @@ When search is enabled:
 
 The application supports several commands:
 
-- `/help` - Show available commands
-- `/config` - View current model configuration
+- `/help` - Show available commands and usage guide
+- `/config` - View current model and mode configuration
+- `/mode <chat|agent>` - Switch conversation mode
+  - Example: `/mode agent` - Switch to Agent mode
+  - Example: `/mode chat` - Switch to Chat mode
 - `/switch <provider>` - Switch to a different model provider
   - Example: `/switch deepseek`
+- `/search <on|off>` - Enable/disable web search (Chat mode only)
 - `/reset` - Clear conversation history
 
 ### Switching Providers
@@ -202,7 +356,8 @@ chatAgent/
 │   ├── config/              # Configuration management
 │   │   ├── __init__.py
 │   │   ├── model_config.py  # Model settings and validation
-│   │   └── search_config.py # Search settings
+│   │   ├── search_config.py # Search settings
+│   │   └── agent_config.py  # Agent mode settings
 │   ├── models/              # Model wrappers
 │   │   ├── __init__.py
 │   │   ├── base.py          # Base wrapper interface
@@ -210,15 +365,24 @@ chatAgent/
 │   │   ├── deepseek_wrapper.py
 │   │   ├── anthropic_wrapper.py
 │   │   └── factory.py       # Model wrapper factory
+│   ├── agents/              # Agent mode implementation (NEW)
+│   │   ├── __init__.py
+│   │   ├── base.py          # Base agent interface
+│   │   ├── react_agent.py   # ReAct agent with LangChain
+│   │   └── tools/           # Agent tools
+│   │       ├── __init__.py
+│   │       └── search_tool.py # Search tool wrapper
 │   ├── prompts/             # Prompt management
 │   │   ├── __init__.py
-│   │   └── templates.py     # Prompt templates and utilities
+│   │   ├── templates.py     # Prompt templates and utilities
+│   │   └── agent_prompts.py # Agent-specific prompts (NEW)
 │   └── search/              # Web search module
 │       ├── __init__.py
 │       ├── models.py         # Search data models
 │       ├── searxng_client.py # SearXNG API client
 │       ├── search_service.py # Search service
-│       └── formatter.py      # Result formatting
+│       ├── formatter.py      # Result formatting
+│       └── citation_processor.py # Citation processing (NEW)
 ├── app.py                   # Main Chainlit application
 ├── requirements.txt         # Python dependencies
 ├── .env                     # Environment variables (create from .env.example)
@@ -228,20 +392,60 @@ chatAgent/
 
 ## Architecture
 
-The system follows a 5-layer architecture:
+The system follows a 5-layer architecture with dual conversation modes:
 
 ```
-┌─────────────────────────────────┐
-│  Application Layer (UI/API)     │  Chainlit interface
-├─────────────────────────────────┤
-│  Business Layer (Agent/Chains)  │  LangChain agents (future)
-├─────────────────────────────────┤
-│  Search/Memory Layer            │  SearXNG search, RAG (future)
-├─────────────────────────────────┤
-│  Model Layer                    │  LLM wrappers + error handling
-├─────────────────────────────────┤
-│  Data Layer                     │  Vector stores (future)
-└─────────────────────────────────┘
+┌─────────────────────────────────────────────────────┐
+│  Application Layer (UI/API)     │  Chainlit UI      │
+│  - Mode Selection                                   │
+│  - Settings Management                              │
+│  - Conversation Routing                             │
+├─────────────────────────────────────────────────────┤
+│  Business Layer (Agents)        │  🤖 Agent Mode    │
+│  - ReAct Agent (LangChain)      │  💬 Chat Mode     │
+│  - Tool Management              │  Manual control   │
+│  - Autonomous Decision-Making   │  Direct LLM call  │
+├─────────────────────────────────────────────────────┤
+│  Search/Memory Layer            │  SearXNG search   │
+│  - SearchService                │  (as tool or      │
+│  - Citation Processing          │   manual toggle)  │
+│  - Result Formatting            │  RAG (future)     │
+├─────────────────────────────────────────────────────┤
+│  Model Layer                    │  Multi-Provider   │
+│  - LLM wrappers                 │  OpenAI           │
+│  - Error handling               │  DeepSeek         │
+│  - LangChain integration        │  Anthropic        │
+├─────────────────────────────────────────────────────┤
+│  Data Layer                     │  Vector stores    │
+│  - Configuration                │  (future)         │
+│  - Prompts                      │                   │
+└─────────────────────────────────────────────────────┘
+```
+
+**Conversation Flow:**
+
+```
+User Input
+    │
+    ├── Mode: Chat ──→ handle_chat_mode()
+    │                     │
+    │                     ├── Manual Search?
+    │                     │   ├── Yes → SearchService → Results + LLM
+    │                     │   └── No → Direct LLM Call
+    │                     └── Stream Response → UI
+    │
+    └── Mode: Agent ─→ handle_agent_mode()
+                          │
+                          └── ReActAgent.stream()
+                              │
+                              ├── 💭 Reasoning (LLM)
+                              ├── 🛠️ Action Decision
+                              │   └── search_tool?
+                              │       ├── Yes → SearchService
+                              │       └── No → Skip
+                              ├── 💡 Observation
+                              ├── 🔁 Repeat if needed
+                              └── ✅ Final Answer → UI
 ```
 
 ## Configuration
@@ -271,6 +475,52 @@ All model parameters can be configured via environment variables:
 - Claude models (Sonnet, Opus, etc.)
 - Direct Anthropic SDK integration
 - Character-based token estimation
+
+### LangSmith Monitoring (Optional)
+
+LangSmith provides comprehensive monitoring and debugging capabilities for LangChain applications.
+
+**Features:**
+- 📊 **Call Tracing**: Automatic tracking of all model calls, Agent executions, and tool invocations
+- 🔍 **Debugging**: Detailed view of execution chains and intermediate states
+- 📈 **Performance Metrics**: Latency, token usage, and cost tracking
+- 🎯 **Project Organization**: Organize traces by project/environment
+
+**Setup:**
+
+1. **Sign up for LangSmith** (free tier available):
+   - Visit https://smith.langchain.com/
+   - Create an account and get your API key
+
+2. **Configure in `.env`**:
+   ```bash
+   LANGSMITH_API_KEY=your-api-key-here
+   LANGSMITH_PROJECT=chatagent-dev  # Optional: project name
+   ```
+
+3. **Restart the application** - LangSmith monitoring will be automatically enabled
+
+**What Gets Tracked:**
+- ✅ All model invocations (OpenAI, Anthropic, DeepSeek)
+- ✅ Agent execution steps (thinking, tool calls, observations)
+- ✅ Tool invocations (web search, etc.)
+- ✅ Performance metrics (latency, token usage)
+- ✅ Error traces and debugging information
+
+**Project Organization:**
+Use different project names for different environments:
+```bash
+# Development
+LANGSMITH_PROJECT=chatagent-dev
+
+# Production
+LANGSMITH_PROJECT=chatagent-prod
+
+# Testing
+LANGSMITH_PROJECT=chatagent-test
+```
+
+**Note:** If `LANGSMITH_API_KEY` is not configured, monitoring is automatically disabled and the application works normally. This ensures backward compatibility.
 
 ## Error Handling
 
@@ -347,12 +597,18 @@ class NewProviderWrapper(BaseModelWrapper):
 
 ## Recent Updates
 
+- 🤖 **Agent Mode** - NEW! Autonomous AI with ReAct pattern
+  - LangChain-based agent with intelligent tool usage
+  - Real-time visualization of思考、行动 and 观察过程
+  - Automatic decision-making for web search
+  - Multi-step reasoning and iterative refinement
+  - See `docs/guides/agent-mode.md` for full details
 - 🔥 **Local SearXNG Deployment** - Stable web search via local Docker deployment
   - Complete deployment guide with docker-compose.yml and settings.yml templates
   - Enhanced health checks and configuration validation
   - Automatic troubleshooting and error diagnostics
   - See `docs/guides/searxng-deployment.md`
-- ✅ **Web Search Integration** - SearXNG-powered search with source display
+- ✅ **Web Search Integration** - SearXNG-powered search with source display (also available as Agent tool)
 - ✅ **Streaming Responses** - Real-time response generation
 - ✅ **Multi-Provider Support** - OpenAI, Anthropic, DeepSeek
 
