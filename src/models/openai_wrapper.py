@@ -88,10 +88,10 @@ class OpenAIWrapper(BaseModelWrapper):
                     f"context limit. Consider reducing prompt size."
                 )
             
-            # Prepare messages
+            # Prepare messages with date information
             messages = []
-            if system_message:
-                messages.append({"role": "system", "content": system_message})
+            system_message_with_date = self.add_date_info_to_system_message(system_message)
+            messages.append({"role": "system", "content": system_message_with_date})
             messages.append({"role": "user", "content": prompt})
             
             # Override config with kwargs if provided
@@ -163,10 +163,10 @@ class OpenAIWrapper(BaseModelWrapper):
                     f"context limit. Consider reducing prompt size."
                 )
             
-            # Prepare messages
+            # Prepare messages with date information
             messages = []
-            if system_message:
-                messages.append({"role": "system", "content": system_message})
+            system_message_with_date = self.add_date_info_to_system_message(system_message)
+            messages.append({"role": "system", "content": system_message_with_date})
             messages.append({"role": "user", "content": prompt})
             
             # Override config with kwargs if provided

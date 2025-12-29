@@ -24,7 +24,7 @@ class AgentConfig(BaseModel):
     """
     
     max_iterations: int = Field(
-        default=5,
+        default=10,
         ge=1,
         le=10,
         description="Maximum number of ReAct iterations"
@@ -109,7 +109,7 @@ def get_agent_config() -> AgentConfig:
         AGENT_ANSWER_MODEL: JSON string for answer generation model config (optional)
     """
     return AgentConfig(
-        max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "5")),
+        max_iterations=int(os.getenv("AGENT_MAX_ITERATIONS", "10")),
         max_execution_time=int(os.getenv("AGENT_MAX_EXECUTION_TIME", "60")),
         verbose=os.getenv("AGENT_VERBOSE", "true").lower() == "true",
         enable_cache=os.getenv("AGENT_ENABLE_CACHE", "true").lower() == "true",

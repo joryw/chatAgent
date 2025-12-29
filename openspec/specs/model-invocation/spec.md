@@ -45,21 +45,29 @@ TBD - created by archiving change add-model-invocation. Update Purpose after arc
 - **AND** 抛出带有清晰消息的配置错误
 
 ### Requirement: 提示词管理
-系统必须（SHALL）提供提示词模板化和格式化能力，用于构建模型输入。
+系统必须（SHALL）提供提示词模板化和格式化能力，用于构建模型输入，并在每次模型调用时自动添加当前日期和时间信息。
 
 #### Scenario: 系统和用户消息格式化
 - **WHEN** 应用层提供系统指令和用户查询
 - **THEN** 系统将它们格式化为正确的消息结构
 - **AND** 维护基于角色的消息顺序
+- **AND** 自动在系统消息中添加当前日期信息（格式：YYYY-MM-DD）
+
+#### Scenario: 日期信息自动添加
+- **WHEN** 系统准备模型调用时
+- **THEN** 系统自动获取当前日期（格式：YYYY-MM-DD）
+- **AND** 将日期信息添加到系统消息中
+- **AND** 日期信息格式为："当前日期：YYYY-MM-DD"（例如："当前日期：2024-12-26"）
 
 #### Scenario: 提示词模板渲染
 - **WHEN** 使用带变量的提示词模板
 - **THEN** 系统用实际值替换占位符
 - **AND** 生成完整的模型提示词
+- **AND** 确保日期信息包含在系统消息中
 
 #### Scenario: 令牌计数
 - **WHEN** 准备提示词用于调用
-- **THEN** 系统计算提示词中的令牌数
+- **THEN** 系统计算提示词中的令牌数（包括日期信息）
 - **AND** 在接近上下文窗口限制时发出警告
 
 ### Requirement: 错误处理与弹性
@@ -107,7 +115,7 @@ TBD - created by archiving change add-model-invocation. Update Purpose after arc
 - **AND** 记录任何异常以供调试
 
 ### Requirement: LangChain集成
-系统必须（SHALL）与LangChain框架集成，用于模型抽象和管理，并正确处理 DeepSeek API 的特殊要求。
+系统必须（SHALL）与LangChain框架集成，用于模型抽象和管理，并支持 LangSmith 监控和追踪。
 
 #### Scenario: LangChain模型包装器
 - **WHEN** 通过系统调用模型
@@ -119,26 +127,36 @@ TBD - created by archiving change add-model-invocation. Update Purpose after arc
 - **THEN** 系统支持用于日志记录的LangChain回调
 - **AND** 允许监控令牌使用和延迟
 
-#### Scenario: DeepSeek Tool Calls 消息格式处理
-- **WHEN** 使用 DeepSeek 模型进行 Agent 模式下的工具调用（function call）
-- **THEN** 系统确保所有包含 `tool_calls` 的 assistant message 都包含 `reasoning_content` 字段
-- **AND** 在消息历史中正确维护 `reasoning_content` 字段
-- **AND** 在流式调用时正确处理消息格式
-- **AND** 如果消息缺少 `reasoning_content`，系统自动添加默认值或使用消息的 `content` 字段
+#### Scenario: LangSmith 监控集成
+- **WHEN** 配置了 LangSmith API 密钥（通过 `LANGSMITH_API_KEY` 环境变量）
+- **THEN** 系统自动启用 LangSmith 监控
+- **AND** 所有通过 LangChain 的模型调用都被追踪到 LangSmith
+- **AND** 追踪信息包括调用参数、响应内容、延迟、token 使用等
+- **AND** 追踪数据组织到指定项目（通过 `LANGSMITH_PROJECT` 环境变量，默认为 "chatagent-dev"）
 
-#### Scenario: LangGraph 流式调用消息处理
-- **WHEN** 通过 LangGraph 进行流式调用时
-- **THEN** 系统在 API 调用前验证并修复消息格式
-- **AND** 确保消息历史中的所有 assistant message 都符合 DeepSeek API 要求
-- **AND** 处理消息对象的不同格式（dict vs BaseMessage）
-- **AND** 在检测到格式错误时自动修复并重试
+#### Scenario: LangSmith 可选启用
+- **WHEN** 未配置 LangSmith API 密钥
+- **THEN** 系统正常运行，不启用 LangSmith 监控
+- **AND** 不影响现有功能和性能
+- **AND** 不输出错误或警告信息（这是正常情况）
 
-#### Scenario: 消息格式错误恢复
-- **WHEN** DeepSeek API 返回 `reasoning_content` 相关错误
-- **THEN** 系统捕获错误并自动修复消息格式
-- **AND** 重新发送修复后的请求
-- **AND** 记录详细的错误和修复日志
-- **AND** 如果自动修复失败，返回友好的错误消息
+#### Scenario: LangSmith 初始化失败处理
+- **WHEN** LangSmith 初始化失败（如 API 密钥无效、网络错误等）
+- **THEN** 系统记录警告日志
+- **AND** 禁用 LangSmith 监控
+- **AND** 继续正常执行，不影响模型调用和 Agent 功能
+
+#### Scenario: Agent 执行追踪
+- **WHEN** Agent 模式执行时
+- **THEN** 如果启用了 LangSmith，Agent 的完整执行过程被追踪
+- **AND** 包括 Agent 的思考过程、工具调用、中间步骤等
+- **AND** 工具调用（如搜索）也被自动追踪
+
+#### Scenario: LangSmith 性能影响
+- **WHEN** LangSmith 监控启用时
+- **THEN** 监控调用是异步的，不应显著影响响应时间
+- **AND** 监控失败不应影响主流程
+- **AND** 系统应保持可接受的性能水平
 
 ### Requirement: Chainlit界面集成
 系统必须（SHALL）通过Chainlit界面提供交互式测试和验证能力,包括推理内容的流式展示和自动折叠。

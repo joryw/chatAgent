@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import os
-from typing import Optional
+from typing import Optional, List
 
 import chainlit as cl
 from chainlit.input_widget import Switch, Select
@@ -31,6 +31,8 @@ from src.search.search_service import SearchService
 from src.search.citation_processor import CitationProcessor
 from src.agents import ReActAgent, AgentStep
 from src.agents.tools import create_search_tool
+from src.config.mcp_config import get_mcp_configs, is_mcp_available
+from src.mcp import MCPClient, create_mcp_tools
 
 # Load environment variables
 load_dotenv()
@@ -49,6 +51,10 @@ _search_initialization_lock = asyncio.Lock()
 
 _global_model_wrappers = {}  # Cache for model wrappers by provider
 _model_initialization_lock = asyncio.Lock()
+
+_global_mcp_clients: List[MCPClient] = []
+_mcp_clients_initialized = False
+_mcp_initialization_lock = asyncio.Lock()
 
 
 async def get_or_create_model_wrapper(provider: str):
@@ -75,6 +81,70 @@ async def get_or_create_model_wrapper(provider: str):
         logger.info(f"✅ Model wrapper initialized: {model_wrapper.config.model_name}")
         
         return model_wrapper
+
+
+async def initialize_mcp_clients() -> List[MCPClient]:
+    """Initialize MCP clients once and cache the result.
+    
+    This function is called only once when the first user session starts.
+    Subsequent sessions will reuse the cached MCP clients.
+    
+    Returns:
+        List of initialized MCP clients
+    """
+    global _global_mcp_clients, _mcp_clients_initialized
+    
+    # Double-check pattern with lock
+    if _mcp_clients_initialized:
+        return _global_mcp_clients
+    
+    async with _mcp_initialization_lock:
+        # Check again after acquiring lock
+        if _mcp_clients_initialized:
+            return _global_mcp_clients
+        
+        if not is_mcp_available():
+            logger.debug("MCP 功能未配置或不可用")
+            _mcp_clients_initialized = True
+            return []
+        
+        try:
+            logger.info("🔌 初始化 MCP Client (一次性设置)...")
+            configs = get_mcp_configs()
+            enabled_configs = [c for c in configs if not c.disabled]
+            
+            if not enabled_configs:
+                logger.info("📋 未找到启用的 MCP 服务器配置")
+                _mcp_clients_initialized = True
+                return []
+            
+            clients = []
+            for config in enabled_configs:
+                try:
+                    client = MCPClient(config)
+                    initialized = await client.initialize()
+                    if initialized:
+                        clients.append(client)
+                        logger.info(f"✅ MCP Client 初始化成功: {config.name}")
+                    else:
+                        logger.warning(f"⚠️ MCP Client 初始化失败: {config.name}")
+                except Exception as e:
+                    logger.error(f"❌ MCP Client 初始化异常 ({config.name}): {e}", exc_info=True)
+            
+            _global_mcp_clients = clients
+            _mcp_clients_initialized = True
+            
+            if clients:
+                logger.info(f"✅ MCP Client 初始化完成，共 {len(clients)} 个客户端")
+            else:
+                logger.info("📋 没有成功初始化的 MCP Client")
+            
+            return clients
+            
+        except Exception as e:
+            logger.error(f"❌ MCP Client 初始化失败: {e}", exc_info=True)
+            _mcp_clients_initialized = True
+            return []
 
 
 async def initialize_search_service() -> Optional[SearchService]:
@@ -156,6 +226,10 @@ async def settings_update(settings):
                 search_service = cl.user_session.get("search_service")
                 
                 if model_wrapper and search_service:
+                    # Get MCP tools
+                    mcp_clients = await initialize_mcp_clients()
+                    mcp_tools = create_mcp_tools(mcp_clients) if mcp_clients else []
+                    
                     # Create agent
                     search_tool = create_search_tool(search_service)
                     agent_config = get_agent_config()
@@ -172,6 +246,7 @@ async def settings_update(settings):
                         search_tool=search_tool,
                         config=agent_config,
                         answer_llm=answer_llm,
+                        additional_tools=mcp_tools,
                     )
                     cl.user_session.set("agent", agent)
                     
@@ -294,6 +369,10 @@ async def start():
             # Get default conversation mode
             default_mode = get_default_mode()
             
+            # Initialize MCP clients (cached, initialized once)
+            mcp_clients = await initialize_mcp_clients()
+            mcp_tools = create_mcp_tools(mcp_clients) if mcp_clients else []
+            
             # Initialize agent if in agent mode and search is available
             agent = None
             if default_mode == "agent" and search_service:
@@ -313,8 +392,9 @@ async def start():
                         search_tool=search_tool,
                         config=agent_config,
                         answer_llm=answer_llm,
+                        additional_tools=mcp_tools,
                     )
-                    logger.info("✅ Agent initialized successfully")
+                    logger.info(f"✅ Agent initialized successfully with {len(mcp_tools)} MCP tools")
                 except Exception as e:
                     logger.error(f"❌ Failed to initialize Agent: {e}")
                     default_mode = "chat"  # Fallback to chat mode
@@ -521,10 +601,38 @@ async def handle_agent_mode(user_message: str):
                 
                 if step.type == "reasoning":
                     # Show thinking process in collapsible step
+                    # Determine step name based on reasoning type
+                    reasoning_type = step.metadata.get("reasoning_type", "tool_selection") if step.metadata else "tool_selection"
+                    is_deepseek_reasoning = step.metadata.get("is_deepseek_reasoning", False) if step.metadata else False
+                    
+                    if is_deepseek_reasoning:
+                        step_name = "🧠 DeepSeek 内部思考"
+                    elif reasoning_type == "tool_selection":
+                        step_name = "💭 思考选择工具"
+                    else:
+                        step_name = "💭 思考中"
+                    
+                    # If this is a new reasoning type or we don't have a thinking step, create a new one
                     if thinking_step is None:
-                        thinking_step = cl.Step(name="💭 思考中", type="tool")
+                        thinking_step = cl.Step(name=step_name, type="tool")
                         await thinking_step.__aenter__()
+                    else:
+                        # Update step name if reasoning type changed
+                        if thinking_step.name != step_name:
+                            # Close current step and create new one
+                            await thinking_step.__aexit__(None, None, None)
+                            thinking_step = cl.Step(name=step_name, type="tool")
+                            await thinking_step.__aenter__()
+                    
+                    # Update thinking content (streaming update)
+                    # For reasoning steps, content is the full reasoning text (not incremental)
                     thinking_step.output = step.content
+                    # Update UI to show the latest content
+                    try:
+                        await thinking_step.update()
+                    except Exception as e:
+                        # If update fails, log but continue (some Chainlit versions may not support update)
+                        logger.debug(f"Step update failed (may not be supported): {e}")
                 
                 elif step.type == "action":
                     # Close thinking step if open
@@ -532,7 +640,12 @@ async def handle_agent_mode(user_message: str):
                         await thinking_step.__aexit__(None, None, None)
                         thinking_step = None
                     
-                    # Show tool call
+                    # Close previous action step if still open (shouldn't happen, but safety check)
+                    if current_action_step:
+                        await current_action_step.__aexit__(None, None, None)
+                        current_action_step = None
+                    
+                    # Show tool call - manually manage lifecycle to ensure sequential display
                     tool_name = step.metadata.get("tool", "unknown") if step.metadata else "unknown"
                     tool_input = step.metadata.get("tool_input", "") if step.metadata else ""
                     current_action_step = cl.Step(name=f"🛠️ 使用工具: {tool_name}", type="tool")
@@ -540,14 +653,16 @@ async def handle_agent_mode(user_message: str):
                     current_action_step.output = f"输入参数: {tool_input}"
                 
                 elif step.type == "observation":
-                    # Close action step if open
+                    # Close action step BEFORE creating observation step to ensure sequential display
                     if current_action_step:
                         await current_action_step.__aexit__(None, None, None)
                         current_action_step = None
                     
-                    # Show tool result
-                    async with cl.Step(name="💡 工具结果", type="tool") as observation_step:
-                        observation_step.output = step.content
+                    # Show tool result - create as a separate, sequential step (not nested)
+                    observation_step = cl.Step(name="💡 工具结果", type="tool")
+                    await observation_step.__aenter__()
+                    observation_step.output = step.content
+                    await observation_step.__aexit__(None, None, None)
                 
                 elif step.type == "final":
                     # Close any open steps
@@ -558,25 +673,32 @@ async def handle_agent_mode(user_message: str):
                         await current_action_step.__aexit__(None, None, None)
                         current_action_step = None
                     
-                    # Show final answer
-                    final_msg = cl.Message(
-                        content=step.content,
-                        author="Assistant",
-                    )
-                    await final_msg.send()
+                    # Show final answer with streaming support
+                    # Check if this is the first final step (create message) or continuation (update)
+                    final_answer_key = "final_answer_msg"
+                    final_msg = cl.user_session.get(final_answer_key)
                     
-                    # Update conversation history
-                    history = cl.user_session.get("conversation_history", [])
-                    history.append({
-                        "role": "user",
-                        "content": user_message,
-                    })
-                    history.append({
-                        "role": "assistant",
-                        "content": step.content,
-                    })
-                    cl.user_session.set("conversation_history", history)
-                    break  # Exit loop after final answer
+                    if final_msg is None:
+                        # Create new message for streaming
+                        final_msg = cl.Message(
+                            content="",
+                            author="Assistant",
+                        )
+                        await final_msg.send()
+                        cl.user_session.set(final_answer_key, final_msg)
+                        cl.user_session.set("final_answer_content", "")
+                    
+                    # Get the message and accumulate content
+                    accumulated_content = cl.user_session.get("final_answer_content", "")
+                    accumulated_content += step.content
+                    cl.user_session.set("final_answer_content", accumulated_content)
+                    
+                    # Update message content (streaming)
+                    final_msg.content = accumulated_content
+                    await final_msg.update()
+                    
+                    # Update conversation history only after stream completes
+                    # (We'll do this after the loop ends)
                 
                 elif step.type == "error":
                     # Close any open steps
@@ -605,6 +727,23 @@ async def handle_agent_mode(user_message: str):
                     await current_action_step.__aexit__(None, None, None)
                 except:
                     pass
+            
+            # Update conversation history after stream completes
+            final_answer_content = cl.user_session.get("final_answer_content")
+            if final_answer_content:
+                history = cl.user_session.get("conversation_history", [])
+                history.append({
+                    "role": "user",
+                    "content": user_message,
+                })
+                history.append({
+                    "role": "assistant",
+                    "content": final_answer_content,
+                })
+                cl.user_session.set("conversation_history", history)
+                # Clean up session variables
+                cl.user_session.set("final_answer_msg", None)
+                cl.user_session.set("final_answer_content", None)
             
             logger.info("✅ Agent 模式处理完成")
         
@@ -1033,6 +1172,10 @@ To change: `/mode chat` or `/mode agent`
             
             if model_wrapper and search_service:
                 try:
+                    # Get MCP tools
+                    mcp_clients = await initialize_mcp_clients()
+                    mcp_tools = create_mcp_tools(mcp_clients) if mcp_clients else []
+                    
                     search_tool = create_search_tool(search_service)
                     agent_config = get_agent_config()
                     
@@ -1048,6 +1191,7 @@ To change: `/mode chat` or `/mode agent`
                         search_tool=search_tool,
                         config=agent_config,
                         answer_llm=answer_llm,
+                        additional_tools=mcp_tools,
                     )
                     cl.user_session.set("agent", agent)
                     

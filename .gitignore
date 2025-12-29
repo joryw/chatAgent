@@ -30,6 +30,9 @@ ENV/
 .env
 .env.local
 
+# MCP configuration (may contain API keys)
+mcp.json
+
 # IDE
 .vscode/
 .idea/

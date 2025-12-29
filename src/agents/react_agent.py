@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import time
-from typing import Optional, AsyncIterator, Any
+from typing import Optional, AsyncIterator, Any, List
 
 from langgraph.prebuilt import create_react_agent
 from langchain_core.prompts import ChatPromptTemplate
@@ -12,6 +12,7 @@ from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+from datetime import datetime
 
 from src.agents.base import (
     BaseAgent,
@@ -58,6 +59,43 @@ Final Answer: 对用户问题的最终回答
 Question: {input}
 Thought: {agent_scratchpad}
 """
+
+
+def add_date_to_messages(messages):
+    """Add date information to system messages.
+    
+    Args:
+        messages: List of messages (can be list or single message)
+        
+    Returns:
+        Modified list of messages with date information
+    """
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    date_info = f"当前日期：{current_date}"
+    
+    # Handle both list and single message
+    if not isinstance(messages, list):
+        messages = [messages]
+    
+    # Check if there's already a system message
+    has_system = False
+    modified_messages = []
+    
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            # Append date info to existing system message
+            modified_messages.append(
+                SystemMessage(content=f"{msg.content}\n\n{date_info}")
+            )
+            has_system = True
+        else:
+            modified_messages.append(msg)
+    
+    # If no system message, add one with date info
+    if not has_system:
+        modified_messages.insert(0, SystemMessage(content=date_info))
+    
+    return modified_messages
 
 
 class StreamingCallbackHandler(AsyncCallbackHandler):
@@ -201,6 +239,7 @@ class ReActAgent(BaseAgent):
         search_tool: SearchTool,
         config: Optional[AgentConfig] = None,
         answer_llm: Optional[BaseChatModel] = None,
+        additional_tools: Optional[List[BaseTool]] = None,
     ):
         """Initialize ReAct Agent.
         
@@ -210,12 +249,15 @@ class ReActAgent(BaseAgent):
             config: Agent configuration (optional)
             answer_llm: Optional language model for answer generation.
                        If None, uses llm for both stages (backward compatibility)
+            additional_tools: Optional list of additional tools (e.g., MCP tools)
         """
         self.config = config or AgentConfig()
         self.function_call_llm = llm
         # If answer_llm is not provided, use function_call_llm for both stages
         self.answer_llm = answer_llm if answer_llm is not None else llm
         self.tools = [search_tool]
+        if additional_tools:
+            self.tools.extend(additional_tools)
         
         # CRITICAL: Bind tools to the model for function calling
         # LangGraph's create_react_agent requires the model to have tools bound
@@ -300,28 +342,50 @@ class ReActAgent(BaseAgent):
             Generated final answer
         """
         # Build context from tool results
-        context_parts = []
-        for i, result in enumerate(tool_results, 1):
-            context_parts.append(f"[搜索结果 {i}]\n{result}")
+        current_date = datetime.now().strftime("%Y-%m-%d")
         
-        context = "\n\n".join(context_parts)
-        
-        # Build prompt for answer generation
-        system_prompt = """你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
+        if tool_results:
+            # Has tool results - generate answer based on them
+            context_parts = []
+            for i, result in enumerate(tool_results, 1):
+                context_parts.append(f"[搜索结果 {i}]\n{result}")
+            
+            context = "\n\n".join(context_parts)
+            
+            system_prompt = f"""你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
+
+当前日期：{current_date}
 
 重要规则:
 1. 仔细分析搜索结果，提取相关信息
 2. 在回答中使用 [数字] 格式引用搜索结果来源
 3. 如果搜索结果不足以回答问题，如实说明
 4. 回答应该准确、完整、有条理
+5. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
 """
-        
-        user_prompt = f"""用户问题: {user_input}
+            
+            user_prompt = f"""用户问题: {user_input}
 
 搜索结果:
 {context}
 
 请基于以上搜索结果回答用户的问题。"""
+        else:
+            # No tool results - answer directly from model knowledge
+            system_prompt = f"""你是一个有用的 AI 助手。请基于你的知识直接回答用户的问题。
+
+当前日期：{current_date}
+
+重要规则:
+1. 提供准确、完整、有条理的回答
+2. 如果不确定答案，请如实说明
+3. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
+4. 注意：由于达到最大迭代次数限制，未能收集到搜索结果，请基于你的知识直接回答
+"""
+            
+            user_prompt = f"""用户问题: {user_input}
+
+请基于你的知识回答用户的问题。"""
         
         # Generate answer using answer_llm
         messages = [
@@ -361,20 +425,25 @@ class ReActAgent(BaseAgent):
             
             # Run agent with timeout using LangGraph API
             # LangGraph expects messages, not a dict with "input" key
-            invoke_input = {"messages": [HumanMessage(content=user_input)]}
+            # Add date information to the input message
+            user_msg = HumanMessage(content=user_input)
+            # Create a system message with date info for the agent
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            date_msg = SystemMessage(content=f"当前日期：{current_date}\n\n重要提示：如果用户询问日期或时间相关问题，请直接使用上述当前日期信息回答，无需使用搜索工具。")
+            invoke_input = {"messages": [date_msg, user_msg]}
             
-            # Prepare config with callbacks if LangSmith is enabled
+            # Prepare config with callbacks and recursion limit
+            # LangGraph uses recursion_limit to control max iterations
+            invoke_config = {
+                "recursion_limit": self.config.max_iterations,
+            }
             if callbacks:
-                invoke_config = {"callbacks": callbacks}
-                result = await asyncio.wait_for(
-                    self.agent_executor.ainvoke(invoke_input, config=invoke_config),
-                    timeout=self.config.max_execution_time,
-                )
-            else:
-                result = await asyncio.wait_for(
-                    self.agent_executor.ainvoke(invoke_input),
-                    timeout=self.config.max_execution_time,
-                )
+                invoke_config["callbacks"] = callbacks
+            
+            result = await asyncio.wait_for(
+                self.agent_executor.ainvoke(invoke_input, config=invoke_config),
+                timeout=self.config.max_execution_time,
+            )
             
             elapsed_time = time.time() - start_time
             logger.info(f"✅ Agent 工具调用阶段完成，耗时 {elapsed_time:.2f}s")
@@ -476,8 +545,25 @@ class ReActAgent(BaseAgent):
         
         except Exception as e:
             elapsed_time = time.time() - start_time
+            error_msg = str(e)
             logger.error(f"❌ Agent 执行失败 ({elapsed_time:.2f}s): {e}")
-            raise AgentExecutionError(f"Agent 执行失败: {str(e)}")
+            
+            # Check if this is a recursion limit error
+            is_recursion_limit = "recursion_limit" in error_msg.lower() or "GRAPH_RECURSION_LIMIT" in error_msg
+            
+            if is_recursion_limit:
+                # For recursion limit errors in run method, we can't extract partial results
+                # because ainvoke throws exception before we can process results
+                # Suggest user to use stream method or increase limit
+                raise AgentIterationLimitError(
+                    f"达到最大迭代次数 ({self.config.max_iterations})。"
+                    f"请尝试：\n"
+                    f"1. 简化您的问题\n"
+                    f"2. 增加最大迭代次数（设置环境变量 AGENT_MAX_ITERATIONS，范围 1-10）\n"
+                    f"3. 使用流式模式可能会在达到限制时基于已有结果生成答案"
+                )
+            else:
+                raise AgentExecutionError(f"Agent 执行失败: {str(e)}")
     
     async def stream(self, user_input: str) -> AsyncIterator[AgentStep]:
         """Stream agent execution steps.
@@ -509,14 +595,25 @@ class ReActAgent(BaseAgent):
             callbacks = [tracer] if tracer else None
             
             # Stream events from LangGraph
-            stream_input = {"messages": [HumanMessage(content=user_input)]}
+            # Add date information to the input message
+            user_msg = HumanMessage(content=user_input)
+            current_date = datetime.now().strftime("%Y-%m-%d")
+            date_msg = SystemMessage(content=f"当前日期：{current_date}\n\n重要提示：如果用户询问日期或时间相关问题，请直接使用上述当前日期信息回答，无需使用搜索工具。")
+            stream_input = {"messages": [date_msg, user_msg]}
             
-            # Prepare config with callbacks if LangSmith is enabled
+            # Prepare config with callbacks and recursion limit
+            # LangGraph uses recursion_limit to control max iterations
+            stream_config = {
+                "recursion_limit": self.config.max_iterations,
+            }
             if callbacks:
-                stream_config = {"callbacks": callbacks}
-                event_stream = self.agent_executor.astream(stream_input, config=stream_config)
-            else:
-                event_stream = self.agent_executor.astream(stream_input)
+                stream_config["callbacks"] = callbacks
+            
+            event_stream = self.agent_executor.astream(stream_input, config=stream_config)
+            
+            # Track the last observation to detect reasoning after observation
+            last_observation_time = None
+            pending_reasoning_after_observation = False
             
             async for event in event_stream:
                 has_yielded = True
@@ -536,9 +633,18 @@ class ReActAgent(BaseAgent):
                         messages = agent_data["messages"]
                         all_messages.extend(messages)
                         
-                        # Check for reasoning (AI message without tool calls)
+                        # Check for reasoning and tool calls in AI messages
                         for msg in messages:
                             if isinstance(msg, AIMessage):
+                                # First, check for DeepSeek reasoning_content (if available)
+                                deepseek_reasoning = None
+                                if hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
+                                    deepseek_reasoning = msg.additional_kwargs.get("reasoning_content")
+                                
+                                # Then check for regular content (thinking process)
+                                content = msg.content
+                                has_reasoning = content and content.strip()
+                                
                                 # Check for tool_calls in multiple possible locations
                                 msg_tool_calls = None
                                 if hasattr(msg, "tool_calls") and msg.tool_calls:
@@ -546,8 +652,61 @@ class ReActAgent(BaseAgent):
                                 elif hasattr(msg, "additional_kwargs") and msg.additional_kwargs:
                                     msg_tool_calls = msg.additional_kwargs.get("tool_calls")
                                 
+                                # Determine reasoning type based on context
+                                # Key logic:
+                                # 1. If has tool_calls -> reasoning before tool call (tool_selection)
+                                # 2. If no tool_calls and no observation -> final answer (don't show as reasoning)
+                                reasoning_type = None
+                                
                                 if msg_tool_calls:
-                                    # This is a tool call decision
+                                    # Has tool calls -> this is reasoning before tool selection
+                                    reasoning_type = "tool_selection"
+                                elif last_observation_time is not None:
+                                    # Just received observation but no tool calls - reset tracking
+                                    # Don't show this as a reasoning step (user doesn't need to see "thinking about continuing")
+                                    pending_reasoning_after_observation = False
+                                    last_observation_time = None
+                                    reasoning_type = None
+                                elif not using_dual_llm and has_reasoning:
+                                    # Single LLM mode, no tool calls, has content -> this is final answer, not reasoning
+                                    # Don't show as reasoning step
+                                    reasoning_type = None
+                                
+                                # Show DeepSeek reasoning_content if available (always show this as it's internal thinking)
+                                if deepseek_reasoning and deepseek_reasoning.strip():
+                                    logger.info(f"🧠 DeepSeek 内部思考过程，长度: {len(deepseek_reasoning)}")
+                                    yield AgentStep(
+                                        type="reasoning",
+                                        content=deepseek_reasoning.strip(),
+                                        metadata={
+                                            "reasoning_type": "deepseek_internal",
+                                            "is_deepseek_reasoning": True,
+                                        }
+                                    )
+                                
+                                # Only show regular reasoning if we determined it's actually reasoning (not final answer)
+                                # Skip if it's the same as deepseek_reasoning to avoid duplication
+                                if has_reasoning and reasoning_type is not None:
+                                    reasoning_content = content.strip()
+                                    
+                                    # Skip if this content is the same as deepseek_reasoning (avoid duplication)
+                                    if deepseek_reasoning and reasoning_content == deepseek_reasoning.strip():
+                                        logger.debug("跳过重复的 reasoning content（与 DeepSeek reasoning_content 相同）")
+                                    else:
+                                        # Only show tool_selection reasoning (before using a tool)
+                                        if reasoning_type == "tool_selection":
+                                            logger.info(f"💭 Agent 思考选择工具，长度: {len(reasoning_content)}")
+                                            yield AgentStep(
+                                                type="reasoning",
+                                                content=reasoning_content,
+                                                metadata={
+                                                    "reasoning_type": reasoning_type,
+                                                }
+                                            )
+                                
+                                # Then send tool calls if present
+                                if msg_tool_calls:
+                                    # This is a tool call decision (after reasoning about tool selection)
                                     logger.info(f"🔧 Agent 决定调用工具，工具调用数量: {len(msg_tool_calls)}")
                                     for tool_call in msg_tool_calls:
                                         # Handle different tool_call formats
@@ -572,26 +731,21 @@ class ReActAgent(BaseAgent):
                                                 "tool_input": str(tool_input),
                                             }
                                         )
-                                else:
-                                    # This is reasoning or final answer from function_call_llm
-                                    content = msg.content
-                                    if content and content.strip():
-                                        if using_dual_llm:
-                                            # In dual LLM mode, this is just reasoning
-                                            # We'll generate final answer later
-                                            yield AgentStep(
-                                                type="reasoning",
-                                                content=content[:300] + "..." if len(content) > 300 else content,
-                                            )
-                                        else:
-                                            # In single LLM mode, this might be final answer
-                                            if len(all_messages) > 1:
-                                                final_answer_from_function_call = content
-                                            else:
-                                                yield AgentStep(
-                                                    type="reasoning",
-                                                    content=content[:300] + "..." if len(content) > 300 else content,
-                                                )
+                                    # Reset observation tracking after tool call decision
+                                    last_observation_time = None
+                                elif not has_reasoning and not using_dual_llm:
+                                    # No tool calls, no reasoning, and single LLM mode - might be final answer
+                                    # Store for later use if this is the final message
+                                    if content and len(all_messages) > 1:
+                                        final_answer_from_function_call = content
+                                    # Reset observation tracking
+                                    last_observation_time = None
+                                elif has_reasoning and reasoning_type is None:
+                                    # This is final answer in single LLM mode, store it
+                                    if not using_dual_llm and len(all_messages) > 1:
+                                        final_answer_from_function_call = content
+                                    # Reset observation tracking
+                                    last_observation_time = None
                 
                 # Check for tools node (tool execution results)
                 elif "tools" in event:
@@ -610,6 +764,9 @@ class ReActAgent(BaseAgent):
                                     type="observation",
                                     content=tool_output[:500] + "..." if len(tool_output) > 500 else tool_output,
                                 )
+                                # Mark that we just received an observation - next reasoning will be about continuing
+                                last_observation_time = time.time()
+                                pending_reasoning_after_observation = True
             
             # Generate final answer
             if using_dual_llm:
@@ -620,14 +777,18 @@ class ReActAgent(BaseAgent):
                     content="正在使用 answer_llm 生成最终回答...",
                 )
                 
-                # Stream answer generation
-                system_prompt = """你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
+                # Stream answer generation with date information
+                current_date = datetime.now().strftime("%Y-%m-%d")
+                system_prompt = f"""你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
+
+当前日期：{current_date}
 
 重要规则:
 1. 仔细分析搜索结果，提取相关信息
 2. 在回答中使用 [数字] 格式引用搜索结果来源
 3. 如果搜索结果不足以回答问题，如实说明
 4. 回答应该准确、完整、有条理
+5. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
 """
                 
                 context_parts = []
@@ -696,27 +857,130 @@ class ReActAgent(BaseAgent):
                 content=f"执行超时 ({self.config.max_execution_time}秒)",
             )
         except Exception as e:
+            error_msg = str(e)
             logger.error(f"❌ Agent 流式执行失败: {e}", exc_info=True)
-            # Try fallback method
-            try:
-                logger.info("尝试使用回退方法...")
-                yield AgentStep(
-                    type="reasoning",
-                    content="流式输出遇到问题，使用备用方法处理...",
-                )
-                result = await self.run(user_input)
-                for step in result.steps:
-                    yield step
-                yield AgentStep(
-                    type="final",
-                    content=result.final_answer,
-                )
-            except Exception as fallback_error:
-                logger.error(f"回退方法也失败: {fallback_error}")
-                yield AgentStep(
-                    type="error",
-                    content=f"执行失败: {str(e)}",
-                )
+            
+            # Check if this is a recursion limit error
+            is_recursion_limit = (
+                "recursion_limit" in error_msg.lower() or 
+                "GRAPH_RECURSION_LIMIT" in error_msg or
+                "need more steps" in error_msg.lower()
+            )
+            
+            if is_recursion_limit:
+                # We hit recursion limit - generate answer from collected results (or without)
+                if tool_results:
+                    logger.warning(f"⚠️ 达到最大迭代次数 ({self.config.max_iterations})，已收集到 {len(tool_results)} 个工具结果，将基于现有结果生成答案")
+                else:
+                    logger.warning(f"⚠️ 达到最大迭代次数 ({self.config.max_iterations})，未收集到工具结果，将基于模型知识直接回答问题")
+                
+                # Always generate answer when hitting recursion limit, regardless of tool_results
+                if using_dual_llm:
+                    # Use answer_llm to generate final answer
+                    current_date = datetime.now().strftime("%Y-%m-%d")
+                    system_prompt = f"""你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
+
+当前日期：{current_date}
+
+重要规则:
+1. 仔细分析搜索结果，提取相关信息
+2. 在回答中使用 [数字] 格式引用搜索结果来源
+3. 如果搜索结果不足以回答问题，如实说明
+4. 回答应该准确、完整、有条理
+5. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
+6. 注意：由于达到最大迭代次数，请基于已有信息给出最佳答案
+"""
+                    
+                    context_parts = []
+                    for i, result in enumerate(tool_results, 1):
+                        context_parts.append(f"[搜索结果 {i}]\n{result}")
+                    
+                    if context_parts:
+                        context = "\n\n".join(context_parts)
+                        user_prompt = f"""用户问题: {user_input}
+
+搜索结果:
+{context}
+
+请基于以上搜索结果回答用户的问题。"""
+                    else:
+                        # No tool results collected, answer directly
+                        user_prompt = f"""用户问题: {user_input}
+
+注意：由于达到最大迭代次数限制，未能收集到搜索结果。请基于你的知识直接回答用户的问题。"""
+                    
+                    messages = [
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=user_prompt)
+                    ]
+                    
+                    # Stream answer generation
+                    async for chunk in self.answer_llm.astream(messages):
+                        if hasattr(chunk, 'content') and chunk.content:
+                            yield AgentStep(
+                                type="final",
+                                content=chunk.content,
+                            )
+                else:
+                    # Single LLM mode - always generate answer when hitting recursion limit
+                    if final_answer_from_function_call:
+                        # Use existing answer if available
+                        yield AgentStep(
+                            type="final",
+                            content=final_answer_from_function_call,
+                        )
+                    else:
+                        # Generate answer from tool results or directly from model
+                        if tool_results:
+                            yield AgentStep(
+                                type="reasoning",
+                                content="基于已收集的工具结果生成答案...",
+                            )
+                        else:
+                            yield AgentStep(
+                                type="reasoning",
+                                content="基于模型知识直接生成答案...",
+                            )
+                        
+                        answer = await self._generate_answer_with_answer_llm(
+                            user_input, tool_results, tool_calls
+                        )
+                        yield AgentStep(
+                            type="final",
+                            content=answer,
+                        )
+            else:
+                # Other errors - try fallback method
+                try:
+                    logger.info("尝试使用回退方法...")
+                    yield AgentStep(
+                        type="reasoning",
+                        content="流式输出遇到问题，使用备用方法处理...",
+                    )
+                    result = await self.run(user_input)
+                    for step in result.steps:
+                        yield step
+                    yield AgentStep(
+                        type="final",
+                        content=result.final_answer,
+                    )
+                except Exception as fallback_error:
+                    logger.error(f"回退方法也失败: {fallback_error}")
+                    # If fallback also hits recursion limit, handle it
+                    if "recursion_limit" in str(fallback_error).lower() and tool_results:
+                        logger.warning("回退方法也达到递归限制，使用已收集的结果生成答案")
+                        answer = await self._generate_answer_with_answer_llm(
+                            user_input, tool_results, tool_calls
+                        )
+                        yield AgentStep(
+                            type="final",
+                            content=answer,
+                        )
+                    else:
+                        yield AgentStep(
+                            type="error",
+                            content=f"执行失败: {str(e)}",
+                        )
     
     def reset(self) -> None:
         """Reset agent state."""

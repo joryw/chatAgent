@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "amap-amap-sse": {
+      "url": "https://mcp.amap.com/sse?key=your-api-key-here",
+      "disabled": false
+    },
+    "wecom": {
+      "command": "uvx",
+      "args": [
+        "wecom-bot-mcp-server"
+      ],
+      "env": {
+        "WECOM_WEBHOOK_URL": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your-webhook-key"
+      },
+      "disabled": false
+    },
+    "example-disabled": {
+      "url": "https://example.com/mcp",
+      "disabled": true
+    }
+  }
+}
+

@@ -81,12 +81,15 @@ class AnthropicWrapper(BaseModelWrapper):
             temperature = kwargs.get("temperature", self.config.temperature)
             max_tokens = kwargs.get("max_tokens", self.config.max_tokens)
             
+            # Add date information to system message
+            system_message_with_date = self.add_date_info_to_system_message(system_message)
+            
             # Call Anthropic API
             response = self.client.messages.create(
                 model=self.config.model_name,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                system=system_message or "",
+                system=system_message_with_date,
                 messages=[
                     {"role": "user", "content": prompt}
                 ],
@@ -152,12 +155,15 @@ class AnthropicWrapper(BaseModelWrapper):
             temperature = kwargs.get("temperature", self.config.temperature)
             max_tokens = kwargs.get("max_tokens", self.config.max_tokens)
             
+            # Add date information to system message
+            system_message_with_date = self.add_date_info_to_system_message(system_message)
+            
             # Call Anthropic API with streaming
             with self.client.messages.stream(
                 model=self.config.model_name,
                 max_tokens=max_tokens,
                 temperature=temperature,
-                system=system_message or "",
+                system=system_message_with_date,
                 messages=[
                     {"role": "user", "content": prompt}
                 ],

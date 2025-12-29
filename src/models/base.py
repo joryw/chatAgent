@@ -3,6 +3,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import AsyncIterator, Optional, List
+from datetime import datetime
 
 from ..config.model_config import ModelConfig
 from ..config.langsmith_config import get_langsmith_tracer
@@ -157,4 +158,32 @@ class BaseModelWrapper(ABC):
         is_valid = total_tokens <= max_prompt_tokens
         
         return is_valid, total_tokens
+    
+    @staticmethod
+    def get_current_date_info() -> str:
+        """Get current date information in YYYY-MM-DD format.
+        
+        Returns:
+            Current date string (e.g., "2024-12-26")
+        """
+        return datetime.now().strftime("%Y-%m-%d")
+    
+    def add_date_info_to_system_message(
+        self,
+        system_message: Optional[str] = None
+    ) -> str:
+        """Add current date information to system message.
+        
+        Args:
+            system_message: Original system message (can be None)
+        
+        Returns:
+            System message with date information appended
+        """
+        date_info = f"当前日期：{self.get_current_date_info()}"
+        
+        if system_message:
+            return f"{system_message}\n\n{date_info}"
+        else:
+            return date_info
 
