@@ -35,15 +35,15 @@ def get_model_wrapper(
     
     # Create appropriate wrapper
     if config.provider == ModelProvider.OPENAI:
-        logger.info(f"Initializing OpenAI wrapper with model: {config.model_name}")
+        logger.debug(f"Creating OpenAI wrapper with model: {config.model_name}")
         return OpenAIWrapper(config)
     
     elif config.provider == ModelProvider.ANTHROPIC:
-        logger.info(f"Initializing Anthropic wrapper with model: {config.model_name}")
+        logger.debug(f"Creating Anthropic wrapper with model: {config.model_name}")
         return AnthropicWrapper(config)
     
     elif config.provider == ModelProvider.DEEPSEEK:
-        logger.info(f"Initializing DeepSeek wrapper with model: {config.model_name}")
+        logger.debug(f"Creating DeepSeek wrapper with model: {config.model_name}")
         return DeepSeekWrapper(config)
     
     else:

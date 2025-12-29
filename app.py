@@ -6,6 +6,7 @@ import os
 from typing import Optional
 
 import chainlit as cl
+from chainlit.input_widget import Switch
 from dotenv import load_dotenv
 
 from src.config.model_config import (
@@ -32,6 +33,132 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Global caches (initialized once at first session start)
+_global_search_service: Optional[SearchService] = None
+_search_service_initialized = False
+_search_initialization_lock = asyncio.Lock()
+
+_global_model_wrappers = {}  # Cache for model wrappers by provider
+_model_initialization_lock = asyncio.Lock()
+
+
+async def get_or_create_model_wrapper(provider: str):
+    """Get cached model wrapper or create new one.
+    
+    Model wrappers are cached per provider to avoid repeated initialization.
+    """
+    global _global_model_wrappers
+    
+    # Return cached wrapper if exists
+    if provider in _global_model_wrappers:
+        logger.debug(f"Reusing cached model wrapper for provider: {provider}")
+        return _global_model_wrappers[provider]
+    
+    async with _model_initialization_lock:
+        # Double-check after acquiring lock
+        if provider in _global_model_wrappers:
+            return _global_model_wrappers[provider]
+        
+        # Create new wrapper
+        logger.info(f"🤖 Initializing model wrapper for provider: {provider} (one-time setup)...")
+        model_wrapper = get_model_wrapper(provider=provider)
+        _global_model_wrappers[provider] = model_wrapper
+        logger.info(f"✅ Model wrapper initialized: {model_wrapper.config.model_name}")
+        
+        return model_wrapper
+
+
+async def initialize_search_service() -> Optional[SearchService]:
+    """Initialize search service once and cache the result.
+    
+    This function is called only once when the first user session starts.
+    Subsequent sessions will reuse the cached search service.
+    """
+    global _global_search_service, _search_service_initialized
+    
+    # Double-check pattern with lock
+    if _search_service_initialized:
+        return _global_search_service
+    
+    async with _search_initialization_lock:
+        # Check again after acquiring lock
+        if _search_service_initialized:
+            return _global_search_service
+        
+        search_available = is_search_available()
+        if not search_available:
+            _search_service_initialized = True
+            return None
+        
+        try:
+            logger.info("🔍 Initializing search service (one-time setup)...")
+            search_config = get_search_config()
+            search_service = SearchService(
+                searxng_url=search_config.searxng_url,
+                timeout=search_config.timeout,
+                max_results=search_config.max_results,
+                max_content_length=search_config.max_content_length,
+            )
+            
+            # Perform one-time health check
+            health_ok = await search_service.client.health_check()
+            
+            if health_ok:
+                logger.info("✅ Search service initialized successfully")
+                _global_search_service = search_service
+            else:
+                logger.warning(
+                    "⚠️ SearXNG health check failed. Search will be unavailable.\n"
+                    "📖 Deployment guide: docs/guides/searxng-deployment.md"
+                )
+                _global_search_service = None
+        
+        except Exception as e:
+            logger.error(
+                f"❌ Failed to initialize search service: {str(e)}\n"
+                "Search functionality will be unavailable.\n"
+                "To enable search:\n"
+                "  1. Deploy SearXNG locally (see docs/guides/searxng-deployment.md)\n"
+                "  2. Ensure SEARXNG_URL in .env points to your instance\n"
+                "  3. Run verification: bash openspec/changes/update-searxng-local-deployment/verify-searxng.sh"
+            )
+            _global_search_service = None
+        
+        _search_service_initialized = True
+        return _global_search_service
+
+
+@cl.on_settings_update
+async def settings_update(settings):
+    """Handle chat settings updates."""
+    try:
+        search_enabled = settings.get("web_search", False)
+        search_service = cl.user_session.get("search_service")
+        
+        if search_service:
+            # Update search enabled state
+            cl.user_session.set("search_enabled", search_enabled)
+            
+            # Send confirmation message
+            status = "✅ 已启用" if search_enabled else "❌ 已禁用"
+            await cl.Message(
+                content=f"联网搜索 {status}",
+                author="System",
+            ).send()
+        else:
+            # Search service not available
+            await cl.Message(
+                content="⚠️ 搜索服务不可用，无法启用联网搜索。\n\n请检查 SearXNG 配置。",
+                author="System",
+            ).send()
+    
+    except Exception as e:
+        logger.error(f"Error updating settings: {str(e)}")
+        await cl.Message(
+            content=f"❌ 设置更新失败: {str(e)}",
+            author="System",
+        ).send()
+
 
 @cl.on_chat_start
 async def start():
@@ -52,27 +179,14 @@ async def start():
         if default_provider not in available_providers:
             default_provider = available_providers[0]
         
-        # Initialize model wrapper
+        # Get cached model wrapper (initialized once per provider)
         try:
-            model_wrapper = get_model_wrapper(provider=default_provider)
+            model_wrapper = await get_or_create_model_wrapper(provider=default_provider)
             config = model_wrapper.config
             
-            # Initialize search service if available
-            search_service = None
-            search_available = is_search_available()
-            if search_available:
-                try:
-                    search_config = get_search_config()
-                    search_service = SearchService(
-                        searxng_url=search_config.searxng_url,
-                        timeout=search_config.timeout,
-                        max_results=search_config.max_results,
-                        max_content_length=search_config.max_content_length,
-                    )
-                    logger.info("Search service initialized")
-                except Exception as e:
-                    logger.warning(f"Failed to initialize search service: {str(e)}")
-                    search_available = False
+            # Get cached search service (initialized once on first session)
+            search_service = await initialize_search_service()
+            search_available = search_service is not None
             
             # Store in session
             cl.user_session.set("model_wrapper", model_wrapper)
@@ -82,8 +196,14 @@ async def start():
             cl.user_session.set("search_service", search_service)
             cl.user_session.set("search_enabled", False)  # Default off
             
-            # Send welcome message
-            search_status = "✅ 可用" if search_available else "❌ 不可用"
+            # Prepare welcome message first
+            if search_available and search_service:
+                search_status = "✅ 可用 (本地部署)"
+                search_hint = ""
+            else:
+                search_status = "❌ 不可用"
+                search_hint = "\n\n💡 **启用联网搜索:**\n1. 部署 SearXNG: `docs/guides/searxng-deployment.md`\n2. 配置 `.env`: `SEARXNG_URL=http://localhost:8080`\n3. 重启应用\n"
+            
             welcome_msg = f"""# 🤖 Welcome to AI Agent Chat!
 
 **Current Model:** {config.model_name}
@@ -92,22 +212,47 @@ async def start():
 **Max Tokens:** {config.max_tokens}
 
 **Available Providers:** {', '.join(available_providers)}
-**联网搜索:** {search_status}
+**联网搜索:** {search_status}{search_hint}
 
 You can start chatting now! Type your message below.
 
-**Commands:**
+**💡 使用 UI 开关:**
+- 点击右上角 ⚙️ 图标打开设置面板
+- 切换 "🔍 联网搜索" 开关即可启用/禁用搜索功能
+- 开关状态会立即生效
+
+**Commands (备用方式):**
 - `/switch <provider>` - Switch to a different model provider
-- `/search <on|off>` - Enable or disable web search
+- `/search <on|off>` - Enable or disable web search (also via UI toggle)
 - `/config` - View current configuration
 - `/reset` - Clear conversation history
 - `/help` - Show this help message
 """
             
-            await cl.Message(
+            # Send welcome message and chat settings simultaneously
+            # This prevents showing a blank screen before content appears
+            welcome_message = cl.Message(
                 content=welcome_msg,
                 author="System",
-            ).send()
+            )
+            
+            chat_settings = cl.ChatSettings(
+                [
+                    Switch(
+                        id="web_search",
+                        label="🔍 联网搜索",
+                        initial=False,
+                        description="启用后将使用 SearXNG 搜索实时信息",
+                        disabled=(search_service is None),
+                    )
+                ]
+            )
+            
+            # Send both at the same time to avoid double window flash
+            await asyncio.gather(
+                welcome_message.send(),
+                chat_settings.send()
+            )
             
         except Exception as e:
             logger.error(f"Failed to initialize model: {str(e)}")
@@ -282,9 +427,14 @@ async def handle_command(command: str):
     if cmd == "/help":
         help_msg = """# 📖 Available Commands
 
+**💡 推荐使用 UI 开关:**
+- 点击右上角 ⚙️ 图标打开设置面板
+- 直接切换 "🔍 联网搜索" 开关
+
+**命令列表 (备用方式):**
 - `/switch <provider>` - Switch to a different model provider (openai, anthropic, deepseek)
-- `/search <on|off>` - Enable or disable web search
-- `/config` - View current model configuration
+- `/search <on|off>` - Enable or disable web search (推荐使用UI开关)
+- `/config` - View current configuration
 - `/reset` - Clear conversation history
 - `/help` - Show this help message
 
@@ -325,6 +475,8 @@ async def handle_command(command: str):
 **Web Search:** {search_status}
 
 **Available Providers:** {', '.join(cl.user_session.get('available_providers', []))}
+
+💡 **提示:** 可通过右上角 ⚙️ 设置面板切换联网搜索开关
 """
         await cl.Message(content=config_msg, author="System").send()
     
@@ -406,8 +558,8 @@ To change: `/search on` or `/search off`
             return
         
         try:
-            # Initialize new model wrapper
-            model_wrapper = get_model_wrapper(provider=provider)
+            # Get cached model wrapper (or create if first time for this provider)
+            model_wrapper = await get_or_create_model_wrapper(provider=provider)
             config = model_wrapper.config
             
             # Update session

@@ -4,29 +4,64 @@
 TBD - created by archiving change add-web-search. Update Purpose after archive.
 ## Requirements
 ### Requirement: 搜索开关控制
-系统 SHALL 在聊天界面提供联网搜索开关,允许用户启用或禁用搜索功能。
+系统 SHALL 在聊天界面提供联网搜索开关,允许用户通过UI控件或命令两种方式启用或禁用搜索功能。
 
-#### Scenario: 用户启用搜索
-- **WHEN** 用户在聊天界面打开联网搜索开关
+#### Scenario: 通过UI开关启用搜索
+- **WHEN** 用户在聊天设置面板中打开"联网搜索"开关
 - **THEN** 系统将在后续对话中启用搜索功能
-- **AND** 界面显示搜索已启用的状态
+- **AND** 系统发送消息确认"联网搜索 ✅ 已启用"
+- **AND** UI开关显示为开启状态
 
-#### Scenario: 用户禁用搜索
-- **WHEN** 用户在聊天界面关闭联网搜索开关
+#### Scenario: 通过UI开关禁用搜索
+- **WHEN** 用户在聊天设置面板中关闭"联网搜索"开关
 - **THEN** 系统将在后续对话中禁用搜索功能
-- **AND** 界面显示搜索已禁用的状态
+- **AND** 系统发送消息确认"联网搜索 ❌ 已禁用"
+- **AND** UI开关显示为关闭状态
+
+#### Scenario: 通过命令启用搜索
+- **WHEN** 用户发送 `/search on` 命令
+- **THEN** 系统启用搜索功能
+- **AND** 系统发送确认消息
+- **AND** UI开关状态同步更新为开启
+
+#### Scenario: 通过命令禁用搜索
+- **WHEN** 用户发送 `/search off` 命令
+- **THEN** 系统禁用搜索功能
+- **AND** 系统发送确认消息
+- **AND** UI开关状态同步更新为关闭
 
 #### Scenario: 默认状态
 - **WHEN** 用户首次进入聊天界面
 - **THEN** 搜索开关默认为关闭状态
+- **AND** UI控件显示为关闭
+- **AND** 欢迎消息中说明搜索开关的位置和用法
+
+#### Scenario: 搜索服务不可用时的UI状态
+- **WHEN** SearXNG 搜索服务不可用或未配置
+- **THEN** UI开关显示为禁用状态(灰色/不可点击)
+- **AND** 开关的描述文本说明"搜索服务不可用"
+- **AND** 欢迎消息中显示配置指南链接
+- **AND** 用户尝试通过命令启用搜索时收到不可用提示
+
+#### Scenario: UI和命令状态同步
+- **WHEN** 用户通过任一方式(UI或命令)修改搜索状态
+- **THEN** 另一种方式的状态显示应当立即同步
+- **AND** `/config` 命令显示的状态与UI开关一致
+- **AND** 实际搜索行为与显示的状态一致
 
 ### Requirement: SearXNG 集成
-系统 SHALL 集成 SearXNG 搜索引擎,提供联网搜索能力。
+系统 SHALL 集成本地部署的 SearXNG 搜索引擎,提供稳定可靠的联网搜索能力。
+
+#### Scenario: 使用本地 SearXNG 实例
+- **WHEN** 系统启动时
+- **THEN** 应当连接到本地部署的 SearXNG 实例
+- **AND** 默认地址为 `http://localhost:8080`
+- **AND** 验证实例的可用性和配置正确性
 
 #### Scenario: 成功搜索
-- **WHEN** 系统需要执行搜索且 SearXNG 服务可用
-- **THEN** 系统向 SearXNG 发送搜索请求
-- **AND** 接收并解析搜索结果(包括标题、URL、摘要)
+- **WHEN** 系统需要执行搜索且本地 SearXNG 服务可用
+- **THEN** 系统向本地 SearXNG 实例发送搜索请求
+- **AND** 接收并解析 JSON 格式的搜索结果(包括标题、URL、摘要)
 
 #### Scenario: 搜索超时
 - **WHEN** 搜索请求超过5秒未返回
@@ -35,10 +70,17 @@ TBD - created by archiving change add-web-search. Update Purpose after archive.
 - **AND** 在界面显示搜索超时提示
 
 #### Scenario: 服务不可用
-- **WHEN** SearXNG 服务不可达或返回错误
+- **WHEN** 本地 SearXNG 服务不可达或返回错误
 - **THEN** 系统应当捕获错误
 - **AND** 降级到无搜索模式继续对话
 - **AND** 在界面显示搜索服务不可用提示
+- **AND** 提示用户检查 SearXNG 部署状态
+
+#### Scenario: 配置验证失败
+- **WHEN** 本地 SearXNG 实例配置不正确(如未启用 JSON 格式)
+- **THEN** 系统应当在启动时检测配置问题
+- **AND** 显示具体的配置错误信息
+- **AND** 提供配置修复建议和文档链接
 
 ### Requirement: 搜索触发机制
 当搜索功能启用时,系统 SHALL 在适当时机触发搜索。
@@ -91,13 +133,14 @@ TBD - created by archiving change add-web-search. Update Purpose after archive.
 - **AND** 序号对应搜索源列表中的顺序
 
 ### Requirement: 搜索配置
-系统 SHALL 支持配置搜索相关参数。
+系统 SHALL 支持配置本地 SearXNG 实例相关参数。
 
 #### Scenario: SearXNG 服务地址配置
 - **WHEN** 系统启动时
 - **THEN** 从环境变量读取 SearXNG 服务地址
-- **AND** 如果未配置则使用默认公共实例
-- **AND** 验证服务地址的有效性
+- **AND** 默认使用本地地址 `http://localhost:8080`
+- **AND** 验证服务地址的格式有效性
+- **AND** 执行健康检查确认服务可用
 
 #### Scenario: 搜索参数配置
 - **WHEN** 系统初始化搜索配置时
@@ -112,6 +155,13 @@ TBD - created by archiving change add-web-search. Update Purpose after archive.
 - **THEN** 系统应当验证配置值的有效性
 - **AND** 对于无效配置使用默认值
 - **AND** 记录配置加载日志
+- **AND** 检查 SearXNG 实例的 JSON API 是否启用
+
+#### Scenario: 部署指引
+- **WHEN** 检测到 SearXNG 服务不可用
+- **THEN** 系统应当显示部署指引信息
+- **AND** 提供部署文档的链接
+- **AND** 说明 Docker 部署的基本步骤
 
 ### Requirement: 错误处理与降级
 系统 SHALL 优雅地处理搜索功能的错误,不影响基础对话能力。
@@ -134,4 +184,83 @@ TBD - created by archiving change add-web-search. Update Purpose after archive.
 - **THEN** 系统应当快速失败(不超过5秒)
 - **AND** 显示网络连接问题提示
 - **AND** 建议用户检查网络或关闭搜索功能
+
+### Requirement: SearXNG 部署支持
+系统 SHALL 提供完整的 SearXNG 本地部署指南和支持。
+
+#### Scenario: 提供部署文档
+- **WHEN** 用户需要部署 SearXNG
+- **THEN** 系统应当提供详细的部署文档
+- **AND** 文档包含 Docker Compose 配置示例
+- **AND** 文档说明必要的 settings.yml 配置项
+- **AND** 文档包含启动和验证步骤
+
+#### Scenario: 配置模板提供
+- **WHEN** 用户需要配置 SearXNG
+- **THEN** 系统应当提供 docker-compose.yml 模板
+- **AND** 提供 settings.yml 配置模板
+- **AND** 模板包含所有必要的配置项
+- **AND** 模板启用 JSON 格式和 API 支持
+
+#### Scenario: 健康检查端点
+- **WHEN** 用户需要验证 SearXNG 部署
+- **THEN** 系统应当提供健康检查功能
+- **AND** 验证服务是否可访问
+- **AND** 验证 JSON API 是否可用
+- **AND** 返回明确的检查结果和建议
+
+### Requirement: 部署故障排查
+系统 SHALL 提供 SearXNG 部署和配置的故障排查指导。
+
+#### Scenario: 连接失败诊断
+- **WHEN** 无法连接到 SearXNG 服务
+- **THEN** 系统应当提示检查以下项目:
+  - Docker 容器是否正在运行
+  - 端口是否正确配置和开放
+  - 网络连接是否正常
+- **AND** 提供具体的检查命令
+
+#### Scenario: 配置错误诊断
+- **WHEN** SearXNG 配置不正确
+- **THEN** 系统应当识别常见配置问题:
+  - JSON 格式未启用
+  - API 未启用
+  - 端口配置错误
+- **AND** 提供针对性的修复建议
+
+#### Scenario: 服务重启指导
+- **WHEN** 用户需要重启 SearXNG 服务
+- **THEN** 系统文档应当提供重启命令
+- **AND** 说明配置修改后的生效方式
+- **AND** 提供验证服务恢复的方法
+
+### Requirement: 聊天设置面板
+系统 SHALL 提供聊天设置面板,允许用户通过UI控件配置聊天功能。
+
+#### Scenario: 设置面板初始化
+- **WHEN** 用户会话开始时
+- **THEN** 系统应当创建并显示聊天设置面板
+- **AND** 设置面板包含"联网搜索"开关控件
+- **AND** 设置面板位于聊天界面的固定位置(如侧边栏或顶部)
+
+#### Scenario: 设置面板可访问性
+- **WHEN** 用户需要修改设置
+- **THEN** 设置面板应当始终可访问
+- **AND** 不会被聊天消息遮挡
+- **AND** 在移动端设备上也能正常显示和操作
+
+#### Scenario: 搜索开关控件
+- **WHEN** 设置面板显示时
+- **THEN** 搜索开关控件应当包含:
+  - 图标: 🔍 (搜索图标)
+  - 标签: "联网搜索"
+  - 描述: "启用后将使用SearXNG搜索实时信息"
+  - 开关状态: 开启/关闭/禁用
+- **AND** 控件状态清晰可辨
+
+#### Scenario: 实时状态更新
+- **WHEN** 用户切换UI开关
+- **THEN** 系统应当立即响应状态变化
+- **AND** 在500毫秒内发送状态确认消息
+- **AND** 后续消息立即按新状态处理
 

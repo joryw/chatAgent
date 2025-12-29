@@ -1,0 +1,158 @@
+# SearXNG 配置文件示例
+# 基于官方文档: https://docs.searxng.org/admin/settings/index.html
+# 此配置专门为 AI 助手集成优化
+
+# 注意: 将此文件保存为 searxng/settings.yml
+
+# ============================================
+# 必需配置 (JSON API 支持)
+# ============================================
+
+# 搜索格式 - 必须包含 json
+search:
+  formats:
+    - html
+    - json  # 必需: 用于 API 集成
+
+# API 配置 - 必须启用
+server:
+  # 必需: 启用 JSON API 端点
+  # 访问方式: http://localhost:8080/search?q=query&format=json
+  limiter: false  # 本地使用可禁用限流
+  
+  # Secret key (在 docker-compose.yml 中通过环境变量设置)
+  # secret_key: "change-this-to-a-random-string"
+
+# ============================================
+# 基础配置
+# ============================================
+
+general:
+  # 实例名称
+  instance_name: "Personal SearXNG for AI Assistant"
+  
+  # 是否显示在公开实例列表 (本地部署建议关闭)
+  contact_url: false
+  
+  # 是否启用自动补全建议
+  autocomplete: ""
+  
+  # 默认语言
+  default_lang: "auto"
+
+# UI 配置
+ui:
+  # 默认主题
+  default_theme: simple
+  
+  # 结果显示方式
+  results_on_new_tab: false
+  
+  # 是否显示高级设置
+  advanced_search: true
+
+# ============================================
+# 搜索引擎配置
+# ============================================
+
+engines:
+  # 默认启用的搜索引擎 (可根据需求调整)
+  
+  # Google
+  - name: google
+    engine: google
+    shortcut: go
+    # weight: 1  # 搜索结果权重
+  
+  # Bing
+  - name: bing
+    engine: bing
+    shortcut: bi
+  
+  # DuckDuckGo
+  - name: duckduckgo
+    engine: duckduckgo
+    shortcut: ddg
+  
+  # Wikipedia
+  - name: wikipedia
+    engine: wikipedia
+    shortcut: wp
+    weight: 2  # 提高维基百科权重
+  
+  # GitHub (适合技术问题)
+  - name: github
+    engine: github
+    shortcut: gh
+  
+  # Stack Overflow (适合编程问题)
+  - name: stackoverflow
+    engine: stackoverflow
+    shortcut: so
+
+  # 可以禁用不需要的引擎
+  # - name: engine_name
+  #   disabled: true
+
+# ============================================
+# 隐私和安全配置
+# ============================================
+
+# 隐私设置
+outgoing:
+  # 请求超时 (秒)
+  request_timeout: 3.0
+  
+  # 最大重定向次数
+  max_request_timeout: 10.0
+  
+  # 使用的默认 HTTP 方法
+  pool_connections: 100
+  pool_maxsize: 10
+  
+  # 是否启用 HTTP/2
+  enable_http2: true
+
+# ============================================
+# 性能优化 (可选)
+# ============================================
+
+# Redis 缓存 (如果使用 Redis 容器)
+# redis:
+#   url: redis://redis:6379/0
+
+# 启用结果代理 (提升隐私)
+result_proxy:
+  url: false  # 本地使用可禁用
+
+# ============================================
+# 日志配置
+# ============================================
+
+# 日志级别: ERROR, WARNING, INFO, DEBUG
+# server:
+#   log_level: "INFO"
+
+# ============================================
+# 其他配置
+# ============================================
+
+# 是否启用指标收集
+# server:
+#   prometheus: false
+
+# 搜索结果去重
+# enabled_plugins:
+#   - 'Hash plugin'
+
+# ============================================
+# 验证配置
+# ============================================
+# 启动后验证 JSON API 是否可用:
+# curl "http://localhost:8080/search?q=test&format=json"
+#
+# 应该返回 JSON 格式的搜索结果，包含:
+# - query: 搜索关键词
+# - results: 搜索结果数组
+# - suggestions: 建议列表
+
