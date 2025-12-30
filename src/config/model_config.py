@@ -98,6 +98,7 @@ def get_model_config(provider: Optional[str] = None) -> ModelConfig:
             api_key=os.getenv("OPENAI_API_KEY", ""),
             temperature=float(os.getenv("OPENAI_TEMPERATURE", "0.7")),
             max_tokens=int(os.getenv("OPENAI_MAX_TOKENS", "2000")),
+            timeout=int(os.getenv("OPENAI_TIMEOUT", "60")),
         )
     
     elif provider == ModelProvider.ANTHROPIC:
@@ -107,6 +108,7 @@ def get_model_config(provider: Optional[str] = None) -> ModelConfig:
             api_key=os.getenv("ANTHROPIC_API_KEY", ""),
             temperature=float(os.getenv("ANTHROPIC_TEMPERATURE", "0.7")),
             max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "2000")),
+            timeout=int(os.getenv("ANTHROPIC_TIMEOUT", "60")),
         )
     
     elif provider == ModelProvider.DEEPSEEK:
@@ -137,6 +139,7 @@ def get_model_config(provider: Optional[str] = None) -> ModelConfig:
             base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
             temperature=float(os.getenv("DEEPSEEK_TEMPERATURE", "0.7")),
             max_tokens=max_tokens,
+            timeout=int(os.getenv("DEEPSEEK_TIMEOUT", "120")),  # DeepSeek reasoner needs more time
             model_variant=model_variant,
         )
     

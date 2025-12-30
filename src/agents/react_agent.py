@@ -25,6 +25,7 @@ from src.agents.base import (
 from src.agents.tools.search_tool import SearchTool
 from src.config.agent_config import AgentConfig
 from src.config.langsmith_config import get_langsmith_tracer
+from src.search.global_citation_manager import GlobalCitationManager
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +256,13 @@ class ReActAgent(BaseAgent):
         self.function_call_llm = llm
         # If answer_llm is not provided, use function_call_llm for both stages
         self.answer_llm = answer_llm if answer_llm is not None else llm
+        
+        # Create global citation manager for Agent mode
+        self.citation_manager = GlobalCitationManager()
+        
+        # Attach citation manager to search tool for global numbering
+        search_tool.citation_manager = self.citation_manager
+        
         self.tools = [search_tool]
         if additional_tools:
             self.tools.extend(additional_tools)
@@ -325,21 +333,23 @@ class ReActAgent(BaseAgent):
         # Continue tool calling
         return False
     
-    async def _generate_answer_with_answer_llm(
+    async def _generate_answer_with_answer_llm_streaming(
         self, 
         user_input: str, 
         tool_results: list[str],
         tool_calls: list[dict]
-    ) -> str:
-        """Generate final answer using answer_llm based on tool results.
+    ):
+        """Generate final answer using answer_llm with streaming support.
+        
+        This method yields AgentStep objects for reasoning and answer content.
         
         Args:
             user_input: Original user question
             tool_results: List of tool execution results
             tool_calls: List of tool call information
             
-        Returns:
-            Generated final answer
+        Yields:
+            AgentStep objects for reasoning and answer content
         """
         # Build context from tool results
         current_date = datetime.now().strftime("%Y-%m-%d")
@@ -387,17 +397,260 @@ class ReActAgent(BaseAgent):
 
 请基于你的知识回答用户的问题。"""
         
-        # Generate answer using answer_llm
+        # Generate answer using answer_llm with streaming
         messages = [
             SystemMessage(content=system_prompt),
             HumanMessage(content=user_prompt)
         ]
         
-        logger.info(f"使用 answer_llm 生成最终回答...")
-        response = await self.answer_llm.ainvoke(messages)
-        answer = response.content if hasattr(response, 'content') else str(response)
+        logger.info(f"使用 answer_llm 流式生成最终回答...")
         
-        return answer
+        # Variables to collect full answer for citation processing
+        full_answer_content = ""
+        reasoning_content = ""
+        reasoning_sent = False
+        
+        # Import citation utilities
+        citation_processor = None
+        if self.citation_manager:
+            from src.search.citation_processor import CitationProcessor
+            from src.search.models import SearchResponse
+            
+            # Create a CitationProcessor with the global citation map
+            citation_processor = CitationProcessor(
+                SearchResponse(query="", results=[], total_results=0, search_time=0.0), 
+                offset=0
+            )
+            citation_processor.citation_map = self.citation_manager.get_global_citation_map()
+        
+        # Stream the response with error handling
+        try:
+            async for chunk in self.answer_llm.astream(messages):
+                # Check for reasoning_content (DeepSeek-R1 and similar models)
+                if hasattr(chunk, 'additional_kwargs'):
+                    deepseek_reasoning = chunk.additional_kwargs.get('reasoning_content')
+                    if deepseek_reasoning and not reasoning_sent:
+                        reasoning_content = deepseek_reasoning
+                        reasoning_sent = True
+                        logger.info(f"🧠 Answer LLM 推理过程，长度: {len(reasoning_content)}")
+                        yield AgentStep(
+                            type="reasoning",
+                            content=reasoning_content,
+                            metadata={
+                                "reasoning_type": "answer_phase",
+                                "is_deepseek_reasoning": True,
+                                "model": "answer_llm"
+                            }
+                        )
+                
+                # Handle regular content
+                if hasattr(chunk, 'content') and chunk.content:
+                    token = chunk.content
+                    full_answer_content += token
+                    
+                    # Stream tokens directly - we'll convert citations after streaming completes
+                    # Real-time conversion is complex due to token boundaries
+                    yield AgentStep(
+                        type="final",
+                        content=token,
+                    )
+            
+            # After streaming completes, convert citations and send updated content
+            if citation_processor and full_answer_content:
+                # Convert inline citations [1] -> [[1]](url)
+                converted_answer = citation_processor.convert_citations(full_answer_content)
+                
+                # Extract which citations were actually used
+                cited_nums = citation_processor._extract_citations(full_answer_content)
+                
+                # Send a special step to tell UI to replace content with converted version
+                logger.info(f"🔗 转换引用链接，共 {len(cited_nums)} 个引用")
+                yield AgentStep(
+                    type="citation_update",
+                    content=converted_answer,
+                    metadata={"replace_content": True}
+                )
+                
+                # Add citations list
+                if cited_nums:
+                    citations_list = self.citation_manager.generate_citations_list(list(cited_nums))
+                    logger.info(f"✅ 添加引用列表，包含 {len(cited_nums)} 条引用")
+                    yield AgentStep(
+                        type="final",
+                        content=citations_list,
+                    )
+            
+            logger.info("✅ Answer LLM 流式输出完成")
+            
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            
+            # Check if this is a timeout error
+            is_timeout = "timeout" in error_msg.lower() or "timed out" in error_msg.lower()
+            
+            if is_timeout:
+                logger.error(f"⏱️ Answer LLM 流式输出超时: {e}")
+                # Don't yield error here, let the caller handle it with fallback
+                raise
+            else:
+                logger.error(f"❌ Answer LLM 流式输出失败 ({error_type}): {e}", exc_info=True)
+                # For other errors, raise to trigger fallback
+                raise
+    
+    def _convert_citation_token(
+        self, 
+        token: str, 
+        full_content: str,
+        citation_processor
+    ) -> str:
+        """Convert citation patterns in a token to clickable links in real-time.
+        
+        This method detects [num] patterns and converts them to Markdown links.
+        Since tokens come one by one, we need to handle partial patterns carefully.
+        
+        Strategy:
+        - We buffer tokens and detect when a complete [num] pattern is formed
+        - When detected, we append the URL in Markdown format: [num](url)
+        - The UI will render this as a clickable link
+        
+        Args:
+            token: Current token being streamed
+            full_content: Full content accumulated so far
+            citation_processor: CitationProcessor instance with citation map
+            
+        Returns:
+            Converted token (may be original if no complete pattern found)
+        """
+        import re
+        
+        # Only process if token contains [ or ] or digits
+        if not any(c in token for c in ['[', ']', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']):
+            return token
+        
+        # Check the last few characters of full_content for complete [num] patterns
+        # Look back up to 15 characters to catch patterns like [123]
+        lookback = min(15, len(full_content))
+        recent_content = full_content[-lookback:] if lookback > 0 else ""
+        
+        # Find all complete citation patterns [num]
+        pattern = r'\[(\d+)\]'
+        matches = list(re.finditer(pattern, recent_content))
+        
+        if not matches:
+            return token
+        
+        # Check if any match ends at the current position (just completed)
+        last_match = matches[-1]
+        match_end_in_full = len(full_content) - lookback + last_match.end()
+        
+        # If the match just completed (ends at current position)
+        if match_end_in_full == len(full_content):
+            citation_num = int(last_match.group(1))
+            citation_info = citation_processor.citation_map.get(citation_num)
+            
+            if citation_info:
+                # Get the URL from citation info
+                url = citation_info.get('url', '')
+                
+                # Calculate the pattern string
+                pattern_str = f"[{citation_num}]"
+                
+                # If entire pattern is in current token (e.g., token is "[1]")
+                if pattern_str in token:
+                    # Replace the entire pattern with markdown link
+                    return token.replace(pattern_str, f"[{citation_num}]({url})")
+                
+                # More likely: the pattern spans multiple tokens
+                # Current token is probably just ']'
+                if token.endswith(']'):
+                    # We need to append the URL part: (url)
+                    # The UI will combine previous tokens [num] with this to form [num](url)
+                    return token + f"({url})"
+                
+                logger.debug(f"引用模式检测到但无法转换: token='{token}', pattern='{pattern_str}'")
+            else:
+                logger.warning(f"引用编号 {citation_num} 在 citation_map 中未找到")
+        
+        return token
+    
+    async def _generate_answer_with_answer_llm(
+        self, 
+        user_input: str, 
+        tool_results: list[str],
+        tool_calls: list[dict]
+    ) -> str:
+        """Generate final answer using answer_llm (non-streaming fallback).
+        
+        This method uses ainvoke (non-streaming) instead of astream, 
+        making it a true fallback when streaming fails or times out.
+        
+        Args:
+            user_input: Original user question
+            tool_results: List of tool execution results
+            tool_calls: List of tool call information
+            
+        Returns:
+            Generated final answer
+        """
+        logger.info("尝试使用回退方法...")
+        
+        # Build context from tool results
+        current_date = datetime.now().strftime("%Y-%m-%d")
+        
+        if tool_results:
+            context = "\n\n".join(tool_results)
+            
+            system_prompt = f"""你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
+
+当前日期：{current_date}
+
+重要规则:
+1. 仔细分析搜索结果，提取相关信息
+2. 在回答中使用 [数字] 格式引用搜索结果来源
+3. 如果搜索结果不足以回答问题，如实说明
+4. 回答应该准确、完整、有条理
+5. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
+"""
+            
+            user_prompt = f"""用户问题: {user_input}
+
+搜索结果:
+{context}
+
+请基于以上搜索结果回答用户的问题。"""
+        else:
+            system_prompt = f"""你是一个有用的 AI 助手。请基于你的知识直接回答用户的问题。
+
+当前日期：{current_date}
+
+重要规则:
+1. 提供准确、完整、有条理的回答
+2. 如果不确定答案，请如实说明
+3. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
+"""
+            
+            user_prompt = f"""用户问题: {user_input}
+
+请基于你的知识回答用户的问题。"""
+        
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt)
+        ]
+        
+        try:
+            # Use ainvoke (non-streaming) with increased timeout
+            response = await self.answer_llm.ainvoke(messages)
+            full_answer = response.content if hasattr(response, 'content') else str(response)
+            
+            logger.info(f"✅ 回退方法成功，回答长度: {len(full_answer)}")
+            return full_answer
+            
+        except Exception as e:
+            logger.error(f"❌ 回退方法失败: {e}")
+            # Return a basic error message
+            return "抱歉，由于网络原因，无法生成完整的回答。请稍后重试。"
     
     async def run(self, user_input: str) -> AgentResult:
         """Run agent on user input.
@@ -414,6 +667,9 @@ class ReActAgent(BaseAgent):
         """
         logger.info(f"🤖 Agent 开始执行: {user_input}")
         start_time = time.time()
+        
+        # Reset citation manager for new conversation
+        self.citation_manager.reset()
         
         # Check if using dual LLM mode
         using_dual_llm = self.answer_llm is not self.function_call_llm
@@ -777,45 +1033,76 @@ class ReActAgent(BaseAgent):
                     content="正在使用 answer_llm 生成最终回答...",
                 )
                 
-                # Stream answer generation with date information
-                current_date = datetime.now().strftime("%Y-%m-%d")
-                system_prompt = f"""你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
-
-当前日期：{current_date}
-
-重要规则:
-1. 仔细分析搜索结果，提取相关信息
-2. 在回答中使用 [数字] 格式引用搜索结果来源
-3. 如果搜索结果不足以回答问题，如实说明
-4. 回答应该准确、完整、有条理
-5. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
-"""
-                
-                context_parts = []
-                for i, result in enumerate(tool_results, 1):
-                    context_parts.append(f"[搜索结果 {i}]\n{result}")
-                context = "\n\n".join(context_parts)
-                
-                user_prompt = f"""用户问题: {user_input}
-
-搜索结果:
-{context}
-
-请基于以上搜索结果回答用户的问题。"""
-                
-                messages = [
-                    SystemMessage(content=system_prompt),
-                    HumanMessage(content=user_prompt)
-                ]
-                
-                # Stream answer generation
-                async for chunk in self.answer_llm.astream(messages):
-                    if hasattr(chunk, 'content') and chunk.content:
-                        yield AgentStep(
-                            type="final",
-                            content=chunk.content,
+                # Use the new streaming method with reasoning support
+                try:
+                    async for answer_step in self._generate_answer_with_answer_llm_streaming(
+                        user_input, tool_results, tool_calls
+                    ):
+                        yield answer_step
+                    
+                    # 双 LLM 模式答案生成完成，终止流式输出
+                    logger.info("✅ 双 LLM 模式流式输出完成")
+                    return
+                    
+                except Exception as stream_error:
+                    error_msg = str(stream_error)
+                    is_timeout = "timeout" in error_msg.lower() or "timed out" in error_msg.lower()
+                    
+                    if is_timeout:
+                        logger.warning(f"⏱️ Answer LLM 流式输出超时，尝试使用回退方法...")
+                    else:
+                        logger.warning(f"⚠️ Answer LLM 流式输出失败 ({type(stream_error).__name__})，尝试使用回退方法...")
+                    
+                    # Try fallback method (non-streaming)
+                    try:
+                        answer = await self._generate_answer_with_answer_llm(
+                            user_input, tool_results, tool_calls
                         )
-            else:
+                        
+                        # Process citations if available
+                        if self.citation_manager and tool_results:
+                            from src.search.citation_processor import CitationProcessor
+                            from src.search.models import SearchResponse
+                            
+                            citation_processor = CitationProcessor(
+                                SearchResponse(query="", results=[], total_results=0, search_time=0.0),
+                                offset=0
+                            )
+                            citation_processor.citation_map = self.citation_manager.get_global_citation_map()
+                            
+                            # Convert citations and get reference list
+                            converted_answer = citation_processor.convert_citations(answer)
+                            cited_nums = citation_processor._extract_citations(answer)
+                            
+                            yield AgentStep(
+                                type="final",
+                                content=converted_answer,
+                            )
+                            
+                            if cited_nums:
+                                citations_list = self.citation_manager.generate_citations_list(list(cited_nums))
+                                logger.info(f"✅ (回退方法) 添加引用列表，包含 {len(cited_nums)} 条引用")
+                                yield AgentStep(
+                                    type="final",
+                                    content=citations_list,
+                                )
+                        else:
+                            yield AgentStep(
+                                type="final",
+                                content=answer,
+                            )
+                        
+                        logger.info("✅ 回退方法成功完成")
+                        return
+                        
+                    except Exception as fallback_error:
+                        logger.error(f"❌ 回退方法也失败: {fallback_error}", exc_info=True)
+                        yield AgentStep(
+                            type="error",
+                            content="抱歉，由于网络原因，无法生成完整的回答。请稍后重试。",
+                        )
+                        return
+            elif not using_dual_llm:
                 # Single LLM mode: use answer from function_call_llm
                 if not final_answer_from_function_call:
                     # Extract final answer from all messages
@@ -826,11 +1113,44 @@ class ReActAgent(BaseAgent):
                                 break
                 
                 if final_answer_from_function_call:
-                    logger.info("✅ Agent 生成最终答案")
-                    yield AgentStep(
-                        type="final",
-                        content=final_answer_from_function_call,
-                    )
+                    logger.info("✅ Agent 生成最终答案（单 LLM 模式）")
+                    # Process citations if available
+                    if self.citation_manager and tool_results:
+                        from src.search.citation_processor import CitationProcessor
+                        from src.search.models import SearchResponse
+                        
+                        # Create a CitationProcessor with the global citation map
+                        citation_processor = CitationProcessor(
+                            SearchResponse(query="", results=[], total_results=0, search_time=0.0), 
+                            offset=0
+                        )
+                        citation_processor.citation_map = self.citation_manager.get_global_citation_map()
+                        
+                        # Convert inline citations and append reference list
+                        converted_answer = citation_processor.convert_citations(final_answer_from_function_call)
+                        cited_nums = citation_processor._extract_citations(final_answer_from_function_call)
+                        
+                        yield AgentStep(
+                            type="final",
+                            content=converted_answer,
+                        )
+                        
+                        if cited_nums:
+                            citations_list = self.citation_manager.generate_citations_list(list(cited_nums))
+                            logger.info(f"✅ 添加引用列表（单 LLM 模式），包含 {len(cited_nums)} 条引用")
+                            yield AgentStep(
+                                type="final",
+                                content=citations_list,
+                            )
+                    else:
+                        yield AgentStep(
+                            type="final",
+                            content=final_answer_from_function_call,
+                        )
+                    
+                    # 单 LLM 模式答案生成完成，终止流式输出
+                    logger.info("✅ 单 LLM 模式流式输出完成")
+                    return
                 elif not has_yielded:
                     # Fallback: if streaming didn't work, use non-streaming method
                     logger.warning("⚠️ 流式输出未返回事件，使用回退方法")
@@ -841,12 +1161,59 @@ class ReActAgent(BaseAgent):
                     result = await self.run(user_input)
                     for step in result.steps:
                         yield step
+                    logger.info("✅ 回退方法完成")
+                    return
                 else:
-                    logger.warning("⚠️ Agent 未生成最终答案")
-                    yield AgentStep(
-                        type="error",
-                        content="Agent 未能生成最终答案，请重试。",
-                    )
+                    # Last resort: generate answer using answer_llm if available
+                    logger.warning("⚠️ Agent 未从流式输出中找到最终答案，尝试使用回退方法...")
+                    try:
+                        # Use the fallback method with real non-streaming API call
+                        answer = await self._generate_answer_with_answer_llm(
+                            user_input, tool_results, tool_calls
+                        )
+                        
+                        # Process citations if available
+                        if self.citation_manager and tool_results:
+                            from src.search.citation_processor import CitationProcessor
+                            from src.search.models import SearchResponse
+                            
+                            citation_processor = CitationProcessor(
+                                SearchResponse(query="", results=[], total_results=0, search_time=0.0),
+                                offset=0
+                            )
+                            citation_processor.citation_map = self.citation_manager.get_global_citation_map()
+                            
+                            # Convert citations and get reference list
+                            converted_answer = citation_processor.convert_citations(answer)
+                            cited_nums = citation_processor._extract_citations(answer)
+                            
+                            yield AgentStep(
+                                type="final",
+                                content=converted_answer,
+                            )
+                            
+                            if cited_nums:
+                                citations_list = self.citation_manager.generate_citations_list(list(cited_nums))
+                                logger.info(f"✅ (回退方法) 添加引用列表，包含 {len(cited_nums)} 条引用")
+                                yield AgentStep(
+                                    type="final",
+                                    content=citations_list,
+                                )
+                        else:
+                            yield AgentStep(
+                                type="final",
+                                content=answer,
+                            )
+                        
+                        logger.info("✅ 回退方法成功完成")
+                        return
+                    except Exception as gen_error:
+                        logger.error(f"❌ 回退方法也失败: {gen_error}", exc_info=True)
+                        yield AgentStep(
+                            type="error",
+                            content="抱歉，由于网络原因，无法生成完整的回答。请稍后重试。",
+                        )
+                        return
             
             logger.info("✅ Agent 流式执行完成")
             
@@ -878,7 +1245,12 @@ class ReActAgent(BaseAgent):
                 if using_dual_llm:
                     # Use answer_llm to generate final answer
                     current_date = datetime.now().strftime("%Y-%m-%d")
-                    system_prompt = f"""你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
+                    
+                    if tool_results:
+                        # Has tool results - generate answer based on them
+                        context = "\n\n".join(tool_results)
+                        
+                        system_prompt = f"""你是一个有用的 AI 助手。基于以下搜索结果，为用户的问题提供一个准确、完整、有引用的回答。
 
 当前日期：{current_date}
 
@@ -890,13 +1262,7 @@ class ReActAgent(BaseAgent):
 5. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
 6. 注意：由于达到最大迭代次数，请基于已有信息给出最佳答案
 """
-                    
-                    context_parts = []
-                    for i, result in enumerate(tool_results, 1):
-                        context_parts.append(f"[搜索结果 {i}]\n{result}")
-                    
-                    if context_parts:
-                        context = "\n\n".join(context_parts)
+                        
                         user_prompt = f"""用户问题: {user_input}
 
 搜索结果:
@@ -904,23 +1270,74 @@ class ReActAgent(BaseAgent):
 
 请基于以上搜索结果回答用户的问题。"""
                     else:
-                        # No tool results collected, answer directly
+                        # No tool results - answer directly from model knowledge
+                        system_prompt = f"""你是一个有用的 AI 助手。请基于你的知识直接回答用户的问题。
+
+当前日期：{current_date}
+
+重要规则:
+1. 提供准确、完整、有条理的回答
+2. 如果不确定答案，请如实说明
+3. 如果用户询问日期或时间相关问题，请使用上述当前日期信息回答
+4. 注意：由于达到最大迭代次数限制，未能收集到搜索结果，请基于你的知识直接回答
+"""
+                        
                         user_prompt = f"""用户问题: {user_input}
 
-注意：由于达到最大迭代次数限制，未能收集到搜索结果。请基于你的知识直接回答用户的问题。"""
+请基于你的知识回答用户的问题。"""
                     
                     messages = [
                         SystemMessage(content=system_prompt),
                         HumanMessage(content=user_prompt)
                     ]
                     
-                    # Stream answer generation
+                    # Stream answer generation and collect the full answer
+                    streamed_answer = ""
                     async for chunk in self.answer_llm.astream(messages):
                         if hasattr(chunk, 'content') and chunk.content:
+                            streamed_answer += chunk.content
                             yield AgentStep(
                                 type="final",
                                 content=chunk.content,
                             )
+                    
+                    # After streaming is complete, convert citations and add reference list
+                    if self.citation_manager and tool_results:
+                        from src.search.citation_processor import CitationProcessor
+                        from src.search.models import SearchResponse
+                        
+                        # Create a CitationProcessor with the global citation map
+                        citation_processor = CitationProcessor(
+                            SearchResponse(query="", results=[], total_results=0, search_time=0.0), 
+                            offset=0
+                        )
+                        citation_processor.citation_map = self.citation_manager.get_global_citation_map()
+                        
+                        # Convert inline citations [1] -> [[1]](url)
+                        converted_answer = citation_processor.convert_citations(streamed_answer)
+                        
+                        # Extract which citations were actually used
+                        cited_nums = citation_processor._extract_citations(streamed_answer)
+                        
+                        # Send citation update to replace content
+                        logger.info(f"🔗 (错误恢复) 转换引用链接，共 {len(cited_nums)} 个引用")
+                        yield AgentStep(
+                            type="citation_update",
+                            content=converted_answer,
+                            metadata={"replace_content": True}
+                        )
+                        
+                        # Generate and append the global citations list
+                        if cited_nums:
+                            citations_list = self.citation_manager.generate_citations_list(list(cited_nums))
+                            logger.info(f"✅ (错误恢复) 添加引用列表，包含 {len(cited_nums)} 条引用")
+                            yield AgentStep(
+                                type="final",
+                                content=citations_list,
+                            )
+                    
+                    # Successfully generated answer, exit exception handler
+                    return
                 else:
                     # Single LLM mode - always generate answer when hitting recursion limit
                     if final_answer_from_function_call:
@@ -949,6 +1366,9 @@ class ReActAgent(BaseAgent):
                             type="final",
                             content=answer,
                         )
+                    
+                    # Successfully generated answer, exit exception handler
+                    return
             else:
                 # Other errors - try fallback method
                 try:
@@ -964,6 +1384,8 @@ class ReActAgent(BaseAgent):
                         type="final",
                         content=result.final_answer,
                     )
+                    # Successfully generated answer using fallback, exit exception handler
+                    return
                 except Exception as fallback_error:
                     logger.error(f"回退方法也失败: {fallback_error}")
                     # If fallback also hits recursion limit, handle it
@@ -976,6 +1398,8 @@ class ReActAgent(BaseAgent):
                             type="final",
                             content=answer,
                         )
+                        # Successfully generated answer, exit exception handler
+                        return
                     else:
                         yield AgentStep(
                             type="error",

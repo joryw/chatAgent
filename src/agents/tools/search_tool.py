@@ -1,7 +1,7 @@
 """Search tool for LangChain Agent."""
 
 import logging
-from typing import Optional, Type
+from typing import Any, Optional, Type
 
 from langchain.tools import BaseTool
 from pydantic import BaseModel, Field
@@ -31,6 +31,7 @@ class SearchTool(BaseTool):
         description: Tool description for Agent to understand when to use it
         args_schema: Input schema (Pydantic model)
         search_service: SearchService instance
+        citation_manager: Optional GlobalCitationManager for Agent mode
         return_direct: Whether to return result directly (False for Agent)
     """
     
@@ -43,6 +44,7 @@ class SearchTool(BaseTool):
     )
     args_schema: Type[BaseModel] = SearchInput
     search_service: SearchService = Field(exclude=True)
+    citation_manager: Optional[Any] = Field(default=None, exclude=True)  # GlobalCitationManager
     return_direct: bool = False
     
     class Config:
@@ -89,7 +91,7 @@ class SearchTool(BaseTool):
                 return "未找到相关搜索结果。请尝试使用不同的关键词或基于已有知识回答。"
             
             # Format results for Agent
-            formatted = self._format_results(results)
+            formatted = self._format_results(results, query=query)
             logger.info(f"✅ 搜索完成，找到 {len(results)} 条结果")
             return formatted
             
@@ -121,7 +123,7 @@ class SearchTool(BaseTool):
                 return "未找到相关搜索结果。请尝试使用不同的关键词或基于已有知识回答。"
             
             # Format results for Agent
-            formatted = self._format_results(results)
+            formatted = self._format_results(results, query=query)
             logger.info(f"✅ 搜索完成，找到 {len(results)} 条结果")
             return formatted
             
@@ -129,31 +131,55 @@ class SearchTool(BaseTool):
             logger.error(f"❌ 搜索工具执行失败: {e}", exc_info=True)
             return f"搜索失败: {str(e)}。请尝试重新搜索或基于已有知识回答。"
     
-    def _format_results(self, results: list[SearchResult]) -> str:
+    def _format_results(self, results: list[SearchResult], query: str = "") -> str:
         """Format search results for Agent consumption.
         
         Args:
             results: List of SearchResult objects
+            query: Search query string (for citation manager)
             
         Returns:
             Formatted string with numbered results
         """
         formatted_parts = ["搜索结果:\n"]
         
-        for i, result in enumerate(results, 1):
-            # Truncate content to 200 characters
-            content = result.content[:200] + "..." if len(result.content) > 200 else result.content
+        # If we have a citation manager (Agent mode), use global numbering
+        if self.citation_manager:
+            # Add results to citation manager and get global number range
+            start_num, end_num = self.citation_manager.add_search_results(results, query)
+            
+            # Use global numbers in formatting
+            for i, result in enumerate(results):
+                global_num = start_num + i
+                # Truncate content to 200 characters
+                content = result.content[:200] + "..." if len(result.content) > 200 else result.content
+                
+                formatted_parts.append(
+                    f"[{global_num}] {result.title}\n"
+                    f"来源: {result.url}\n"
+                    f"摘要: {content}\n"
+                )
             
             formatted_parts.append(
-                f"[{i}] {result.title}\n"
-                f"来源: {result.url}\n"
-                f"摘要: {content}\n"
+                f"\n找到 {len(results)} 条搜索结果（编号 [{start_num}-{end_num}]）。"
+                f"你可以使用 [数字] 格式在回答中引用这些来源。"
             )
-        
-        formatted_parts.append(
-            f"\n找到 {len(results)} 条搜索结果。"
-            f"你可以使用 [数字] 格式在回答中引用这些来源。"
-        )
+        else:
+            # Chat mode - use local numbering (1, 2, 3, ...)
+            for i, result in enumerate(results, 1):
+                # Truncate content to 200 characters
+                content = result.content[:200] + "..." if len(result.content) > 200 else result.content
+                
+                formatted_parts.append(
+                    f"[{i}] {result.title}\n"
+                    f"来源: {result.url}\n"
+                    f"摘要: {content}\n"
+                )
+            
+            formatted_parts.append(
+                f"\n找到 {len(results)} 条搜索结果。"
+                f"你可以使用 [数字] 格式在回答中引用这些来源。"
+            )
         
         return "\n".join(formatted_parts)
 

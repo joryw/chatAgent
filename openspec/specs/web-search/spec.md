@@ -361,29 +361,30 @@ TBD - created by archiving change add-web-search. Update Purpose after archive.
 - **AND** 示例展示如何解读搜索结果
 
 ### Requirement: 搜索结果引用
-系统必须（SHALL）在 Agent 模式下支持搜索结果的引用标记。
+系统必须（SHALL）在 Agent 模式下支持全局连续的搜索结果引用编号，并在最终回答后展示统一的引用列表。
 
-#### Scenario: 结果编号分配
-- **WHEN** 搜索工具返回结果给 Agent
-- **THEN** 每个结果分配唯一编号 (1, 2, 3...)
-- **AND** 编号在工具输出中明确标注
-- **AND** Agent 可以在回答中引用这些编号
+#### Scenario: Agent 模式结果编号分配（修改）
+- **WHEN** SearchTool 在 Agent 模式下返回结果
+- **THEN** 使用全局引用管理器分配编号
+- **AND** 编号连续递增，不从 1 重新开始
+- **AND** 工具输出中明确标注全局编号
 
-#### Scenario: Agent 引用结果
+#### Scenario: Agent 模式引用结果（修改）
 - **WHEN** Agent 在回答中引用搜索结果
-- **THEN** Agent 使用 [数字] 格式引用
-- **AND** 系统识别并处理这些引用
-- **AND** 将引用转换为可点击链接 (与 Chat 模式一致)
+- **THEN** Agent 使用全局编号 [数字] 格式引用
+- **AND** 系统识别并处理全局编号的引用
+- **AND** 将引用转换为可点击链接
 
-#### Scenario: 引用列表生成
-- **WHEN** Agent 回答包含引用
-- **THEN** 在回答末尾添加 "参考文献" 部分
-- **AND** 列出所有使用的搜索来源
-- **AND** 格式与 Chat 模式保持一致
+#### Scenario: Agent 模式引用列表生成（新增）
+- **WHEN** Agent 回答完成
+- **THEN** 系统生成统一的引用文章列表
+- **AND** 列表包含所有搜索的来源信息
+- **AND** 按搜索轮次分组展示
+- **AND** 添加在回答末尾
 
-#### Scenario: 无引用处理
-- **WHEN** Agent 回答未使用搜索结果
-- **THEN** 不添加引用列表
-- **AND** 回答中不包含引用标记
-- **AND** 用户可以看到 Agent 基于已有知识回答
+#### Scenario: Chat 模式引用列表生成（保持不变）
+- **WHEN** Chat 模式回答包含引用
+- **THEN** 使用现有的 "参考文献" 格式
+- **AND** 行为与之前完全一致
+- **AND** 不使用全局引用管理器
 

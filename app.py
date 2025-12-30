@@ -664,6 +664,19 @@ async def handle_agent_mode(user_message: str):
                     observation_step.output = step.content
                     await observation_step.__aexit__(None, None, None)
                 
+                elif step.type == "citation_update":
+                    # Handle citation conversion - replace accumulated content with converted version
+                    final_answer_key = "final_answer_msg"
+                    final_msg = cl.user_session.get(final_answer_key)
+                    
+                    if final_msg:
+                        # Replace content with citation-converted version
+                        final_msg.content = step.content
+                        await final_msg.update()
+                        # Update stored content
+                        cl.user_session.set("final_answer_content", step.content)
+                        logger.info("🔗 引用链接已转换并更新到UI")
+                
                 elif step.type == "final":
                     # Close any open steps
                     if thinking_step:

@@ -13,30 +13,53 @@ logger = logging.getLogger(__name__)
 class CitationProcessor:
     """Process and convert citations in model responses."""
     
-    def __init__(self, search_response: SearchResponse):
+    def __init__(self, search_response: SearchResponse, offset: int = 0):
         """Initialize with search results.
         
         Args:
             search_response: SearchResponse containing URLs for citations
+            offset: Starting offset for citation numbering (default: 0, starts from 1)
+                   For Agent mode with global numbering, pass the offset from
+                   GlobalCitationManager. For Chat mode, use default 0.
+                   
+        Example:
+            # Chat mode (default): citations numbered [1, 2, 3, ...]
+            processor = CitationProcessor(search_response)
+            
+            # Agent mode: citations numbered [6, 7, 8, ...] if offset=5
+            processor = CitationProcessor(search_response, offset=5)
         """
         self.search_response = search_response
+        self.offset = offset
         self.citation_map: Dict[int, Dict[str, str]] = {}
         self._build_citation_map()
     
     def _build_citation_map(self) -> None:
-        """Build mapping from citation number to URL and metadata."""
+        """Build mapping from citation number to URL and metadata.
+        
+        Citation numbers start from (offset + 1). For example:
+        - offset=0: citations are [1, 2, 3, ...]
+        - offset=5: citations are [6, 7, 8, ...]
+        """
         if self.search_response.is_empty():
             logger.debug("No search results to build citation map")
             return
         
         for idx, result in enumerate(self.search_response.results, 1):
-            self.citation_map[idx] = {
+            citation_num = self.offset + idx
+            self.citation_map[citation_num] = {
                 'url': result.url,
                 'title': result.title,
                 'domain': self._extract_domain(result.url)
             }
         
-        logger.info(f"Built citation map with {len(self.citation_map)} entries")
+        if self.offset > 0:
+            logger.info(
+                f"Built citation map with {len(self.citation_map)} entries "
+                f"(offset={self.offset}, range=[{self.offset+1}-{self.offset+len(self.citation_map)}])"
+            )
+        else:
+            logger.info(f"Built citation map with {len(self.citation_map)} entries")
     
     def _extract_domain(self, url: str) -> str:
         """Extract domain from URL.

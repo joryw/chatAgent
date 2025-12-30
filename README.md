@@ -205,6 +205,7 @@ Autonomous AI that makes intelligent decisions about tool usage.
 - 🛠️ **Tool Integration**: Automatic use of search and other tools
 - 👁️ **Process Visualization**: See the agent's思考、行动 and 观察过程
 - 🎯 **Multi-Step Reasoning**: Supports iterative searches and refinement
+- 📚 **Global Citation Management**: Unified citation numbering across multiple searches with comprehensive reference list
 
 **Switching to Agent Mode:**
 
@@ -248,10 +249,24 @@ User: "Compare the latest AI models from OpenAI, Anthropic, and DeepSeek"
 
 Agent Process:
 ├─ 💭 Thinking: Need current information about latest models
-├─ 🛠️ Search: "latest AI models 2024 OpenAI Anthropic DeepSeek"
-├─ 💡 Observation: Found 5 results with model comparisons
+├─ 🛠️ Search 1: "latest AI models 2024 OpenAI Anthropic DeepSeek"
+├─ 💡 Observation: Found 5 results [1-5]
+├─ 💭 Thinking: Need pricing and performance benchmarks
+├─ 🛠️ Search 2: "AI model benchmarks pricing 2024"
+├─ 💡 Observation: Found 3 results [6-8]
 ├─ 💭 Thinking: Information sufficient, can now answer
-└─ ✅ Answer: Detailed comparison with citations [1][2][3]
+└─ ✅ Answer: Detailed comparison with citations [1][3][6][7]
+
+---
+📚 引用文章列表:
+
+第 1 次搜索 (查询: latest AI models 2024 OpenAI Anthropic DeepSeek)
+1. [GPT-4 Turbo Release](https://openai.com/...) - `openai.com`
+3. [DeepSeek V2 Review](https://deepseek.com/...) - `deepseek.com`
+
+第 2 次搜索 (查询: AI model benchmarks pricing 2024)
+6. [MMLU Benchmark Results](https://huggingface.co/...) - `huggingface.co`
+7. [AI Model Pricing Guide](https://techcrunch.com/...) - `techcrunch.com`
 ```
 
 For more details, see the [Agent Mode Guide](docs/guides/agent-mode.md).
@@ -313,6 +328,9 @@ When search is enabled:
 - Search results are displayed with sources
 - The model uses search results to provide up-to-date answers
 - Sources are cited with [number] references
+- **Agent Mode**: Citations use global numbering across multiple searches (e.g., [1-5] from first search, [6-10] from second search)
+- **Chat Mode**: Citations are numbered independently for each search (always [1-5])
+- A comprehensive reference list is generated at the end of the answer, grouped by search round
 
 **Commands:**
 - `/search on` - Enable web search
@@ -382,7 +400,8 @@ chatAgent/
 │       ├── searxng_client.py # SearXNG API client
 │       ├── search_service.py # Search service
 │       ├── formatter.py      # Result formatting
-│       └── citation_processor.py # Citation processing (NEW)
+│       ├── citation_processor.py # Citation processing with offset support
+│       └── global_citation_manager.py # Global citation manager for Agent mode (NEW)
 ├── app.py                   # Main Chainlit application
 ├── requirements.txt         # Python dependencies
 ├── .env                     # Environment variables (create from .env.example)
@@ -597,6 +616,11 @@ class NewProviderWrapper(BaseModelWrapper):
 
 ## Recent Updates
 
+- 📚 **Global Citation Management** - NEW! Unified reference system for Agent mode
+  - Sequential global numbering across multiple searches (e.g., [1-5], [6-10], [11-15])
+  - Comprehensive reference list grouped by search round
+  - Clear source tracking for multi-round searches
+  - Backward compatible with Chat mode (independent numbering per search)
 - 🤖 **Agent Mode** - NEW! Autonomous AI with ReAct pattern
   - LangChain-based agent with intelligent tool usage
   - Real-time visualization of思考、行动 and 观察过程
